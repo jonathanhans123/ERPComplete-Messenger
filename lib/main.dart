@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'app/app_shell.dart';
 import 'core/auth/auth_repository.dart';
+import 'theme/messenger_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,10 +19,9 @@ class ErpMessengerApp extends StatelessWidget {
       create: (_) => AuthRepository()..bootstrap(),
       child: MaterialApp(
         title: 'ERPComplete Messenger',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
-          useMaterial3: true,
-        ),
+        theme: buildMessengerTheme(),
+        darkTheme: buildMessengerTheme(brightness: Brightness.dark),
+        themeMode: ThemeMode.system,
         home: const AppShell(),
       ),
     );

@@ -20,29 +20,37 @@ class ApiClient {
   final String baseUrl;
   String? token;
 
-  Uri _uri(String path) {
+  Uri _uri(String path, [Map<String, String>? query]) {
     final normalized = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
     final p = path.startsWith('/') ? path.substring(1) : path;
-    return Uri.parse('$normalized/$p');
+    return Uri.parse('$normalized/$p').replace(queryParameters: query);
   }
 
-  Map<String, String> get _headers => {
+  Map<String, String> get _jsonHeaders => {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         if (token != null && token!.isNotEmpty) 'Authorization': 'Bearer $token',
       };
 
-  Future<Map<String, dynamic>> postJson(String path, {Map<String, dynamic>? body}) async {
-    final response = await http.post(
-      _uri(path),
-      headers: _headers,
-      body: body == null ? null : jsonEncode(body),
-    );
+  Future<Map<String, dynamic>> getJson(String path, {Map<String, String>? query}) async {
+    final response = await http.get(_uri(path, query), headers: _jsonHeaders);
     return _decodeMap(response);
   }
 
-  Future<Map<String, dynamic>> getJson(String path) async {
-    final response = await http.get(_uri(path), headers: _headers);
+  Future<Map<String, dynamic>> postJson(String path, {Map<String, dynamic>? body}) async {
+    final response = await http.post(_uri(path), headers: _jsonHeaders, body: jsonEncode(body ?? {}));
+    return _decodeMap(response);
+  }
+
+  Future<Map<String, dynamic>> postForm(String path, Map<String, String> fields) async {
+    final response = await http.post(
+      _uri(path),
+      headers: {
+        'Accept': 'application/json',
+        if (token != null && token!.isNotEmpty) 'Authorization': 'Bearer $token',
+      },
+      body: fields,
+    );
     return _decodeMap(response);
   }
 
@@ -51,11 +59,15 @@ class ApiClient {
       throw ApiException('Session expired. Sign in again.', statusCode: 401);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(
-        response.body.isNotEmpty ? response.body : 'Server error (${response.statusCode})',
-        statusCode: response.statusCode,
-      );
+      String msg = response.body;
+      try {
+        final j = jsonDecode(response.body);
+        if (j is Map && j['message'] != null) msg = j['message'].toString();
+        if (j is Map && j['error'] != null) msg = j['error'].toString();
+      } catch (_) {}
+      throw ApiException(msg.isNotEmpty ? msg : 'Server error (${response.statusCode})', statusCode: response.statusCode);
     }
+    if (response.body.isEmpty) return {};
     final decoded = jsonDecode(response.body);
     if (decoded is Map<String, dynamic>) return decoded;
     return {'data': decoded};
