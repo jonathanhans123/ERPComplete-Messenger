@@ -1,0 +1,21 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.iml
+.idea/
+*.lock
+
+# Platform (regenerate with flutter create)
+android/
+ios/
+linux/
+macos/
+web/
+windows/
+
+# Secrets
+*.env
+.env.local
