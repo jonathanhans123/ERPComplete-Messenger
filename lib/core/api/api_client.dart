@@ -5,10 +5,11 @@ import 'dart:typed_data';
 import '../../config/api_config.dart';
 
 class ApiException implements Exception {
-  ApiException(this.message, {this.statusCode});
+  ApiException(this.message, {this.statusCode, this.twoFactorRequired = false});
 
   final String message;
   final int? statusCode;
+  final bool twoFactorRequired;
 
   @override
   String toString() => message;
@@ -184,8 +185,9 @@ class ApiClient {
     if (statusCode == 403) {
       if (isLogin && json?['two_factor_required'] == true) {
         throw ApiException(
-          serverMessage() ?? 'Two-factor authentication is required. Enter your authenticator code.',
+          serverMessage() ?? 'Enter the code from your authenticator app.',
           statusCode: 403,
+          twoFactorRequired: true,
         );
       }
       throw ApiException(

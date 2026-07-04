@@ -1,17 +1,30 @@
 enum ConversationFilter { all, unread, groups, teams, operations, archived }
 
 class LoginRequest {
-  LoginRequest({required this.email, required this.password, this.deviceName = 'ERPComplete-Messenger'});
+  LoginRequest({
+    required this.email,
+    required this.password,
+    this.twoFactorCode,
+    this.deviceName = 'ERPComplete-Messenger',
+  });
 
   final String email;
   final String password;
+  final String? twoFactorCode;
   final String deviceName;
 
-  Map<String, dynamic> toJson() => {
-        'email': email,
-        'password': password,
-        'device_name': deviceName,
-      };
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{
+      'email': email,
+      'password': password,
+      'device_name': deviceName,
+    };
+    final code = twoFactorCode?.trim();
+    if (code != null && code.isNotEmpty) {
+      map['two_factor_code'] = code;
+    }
+    return map;
+  }
 }
 
 class LoginResponse {

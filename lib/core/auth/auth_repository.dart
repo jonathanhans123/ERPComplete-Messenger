@@ -59,9 +59,16 @@ class AuthRepository extends ChangeNotifier {
         teamId: _teamId,
       );
 
-  Future<void> login({required String email, required String password}) async {
+  Future<void> login({
+    required String email,
+    required String password,
+    String? twoFactorCode,
+  }) async {
     final client = apiClientForBaseUrl(apiBaseUrl);
-    final json = await client.postJson('auth/login', body: LoginRequest(email: email, password: password).toJson());
+    final json = await client.postJson(
+      'auth/login',
+      body: LoginRequest(email: email, password: password, twoFactorCode: twoFactorCode).toJson(),
+    );
     final response = LoginResponse.fromJson(json);
     if (response.accessToken == null || response.accessToken!.isEmpty) {
       throw ApiException('No access token in login response');

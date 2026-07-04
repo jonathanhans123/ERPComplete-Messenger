@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/api/api_client.dart';
@@ -15,15 +16,28 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _twoFactorCode = TextEditingController();
+  final _twoFactorFocus = FocusNode();
   bool _loading = false;
   bool _obscure = true;
+  bool _needsTwoFactor = false;
   String? _error;
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _twoFactorCode.dispose();
+    _twoFactorFocus.dispose();
     super.dispose();
+  }
+
+  void _backToCredentials() {
+    setState(() {
+      _needsTwoFactor = false;
+      _twoFactorCode.clear();
+      _error = null;
+    });
   }
 
   Future<void> _submit() async {
@@ -33,7 +47,21 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     final auth = context.read<AuthRepository>();
     try {
-      await auth.login(email: _email.text.trim(), password: _password.text);
+      await auth.login(
+        email: _email.text.trim(),
+        password: _password.text,
+        twoFactorCode: _needsTwoFactor ? _twoFactorCode.text.trim() : null,
+      );
+    } on ApiException catch (e) {
+      if (e.twoFactorRequired && mounted) {
+        setState(() {
+          _needsTwoFactor = true;
+          _error = null;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) => _twoFactorFocus.requestFocus());
+      } else {
+        setState(() => _error = e.message);
+      }
     } catch (e) {
       setState(() => _error = formatApiError(e));
     } finally {
@@ -73,7 +101,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: [BoxShadow(color: MessengerPalette.whatsAppGreen.withValues(alpha: 0.35), blurRadius: 24, offset: const Offset(0, 8))],
                       ),
-                      child: const Icon(Icons.chat_rounded, color: Colors.white, size: 36),
+                      child: Icon(_needsTwoFactor ? Icons.shield_outlined : Icons.chat_rounded, color: Colors.white, size: 36),
                     ),
                     const SizedBox(height: 20),
                     Text(
@@ -91,31 +119,77 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Text('Sign in', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-                            const SizedBox(height: 4),
-                            Text('Use your ERP workspace account', style: TextStyle(color: ext.subtext, fontSize: 14)),
-                            const SizedBox(height: 24),
-                            TextField(
-                              controller: _email,
-                              decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.email_outlined)),
-                              keyboardType: TextInputType.emailAddress,
-                              autocorrect: false,
-                              textInputAction: TextInputAction.next,
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: _password,
-                              decoration: InputDecoration(
-                                labelText: 'Password',
-                                prefixIcon: const Icon(Icons.lock_outline),
-                                suffixIcon: IconButton(
-                                  icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                                  onPressed: () => setState(() => _obscure = !_obscure),
-                                ),
+                            if (_needsTwoFactor) ...[
+                              Row(
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Back',
+                                    onPressed: _loading ? null : _backToCredentials,
+                                    icon: const Icon(Icons.arrow_back),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      'Two-factor authentication',
+                                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              obscureText: _obscure,
-                              onSubmitted: (_) => _loading ? null : _submit(),
-                            ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Enter the 6-digit code from your authenticator app for ${_email.text.trim()}',
+                                style: TextStyle(color: ext.subtext, fontSize: 14, height: 1.4),
+                              ),
+                              const SizedBox(height: 24),
+                              TextField(
+                                controller: _twoFactorCode,
+                                focusNode: _twoFactorFocus,
+                                decoration: const InputDecoration(
+                                  labelText: 'Authentication code',
+                                  hintText: '000000',
+                                  prefixIcon: Icon(Icons.pin_outlined),
+                                ),
+                                keyboardType: TextInputType.number,
+                                textInputAction: TextInputAction.done,
+                                autofillHints: const [AutofillHints.oneTimeCode],
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                  LengthLimitingTextInputFormatter(8),
+                                ],
+                                onSubmitted: (_) => _loading ? null : _submit(),
+                              ),
+                            ] else ...[
+                              Text('Sign in', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 4),
+                              Text('Use your ERP workspace account', style: TextStyle(color: ext.subtext, fontSize: 14)),
+                              const SizedBox(height: 24),
+                              TextField(
+                                controller: _email,
+                                decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.email_outlined)),
+                                keyboardType: TextInputType.emailAddress,
+                                autocorrect: false,
+                                autofillHints: const [AutofillHints.email],
+                                textInputAction: TextInputAction.next,
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _password,
+                                decoration: InputDecoration(
+                                  labelText: 'Password',
+                                  prefixIcon: const Icon(Icons.lock_outline),
+                                  suffixIcon: IconButton(
+                                    icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                                    onPressed: () => setState(() => _obscure = !_obscure),
+                                  ),
+                                ),
+                                obscureText: _obscure,
+                                autofillHints: const [AutofillHints.password],
+                                onSubmitted: (_) => _loading ? null : _submit(),
+                              ),
+                            ],
                             if (_error != null) ...[
                               const SizedBox(height: 16),
                               Container(
@@ -137,7 +211,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                               child: _loading
                                   ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                  : const Text('Continue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                                  : Text(
+                                      _needsTwoFactor ? 'Verify' : 'Continue',
+                                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                                    ),
                             ),
                           ],
                         ),
