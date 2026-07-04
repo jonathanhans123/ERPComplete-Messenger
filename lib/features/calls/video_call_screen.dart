@@ -95,7 +95,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                           children: [
                             CircleAvatar(
                               radius: 48,
-                              backgroundColor: MessengerColors.primary,
+                              backgroundColor: MessengerPalette.accent,
                               child: Text(
                                 widget.conversation.avatarInitials ?? '?',
                                 style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600),
@@ -140,7 +140,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                               _CallControl(
                                 icon: Icons.call_end,
                                 label: 'End',
-                                color: MessengerColors.danger,
+                                color: MessengerPalette.danger,
                                 onTap: () => Navigator.of(context).pop(),
                               ),
                             ],

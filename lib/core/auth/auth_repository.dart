@@ -12,6 +12,8 @@ class AuthRepository extends ChangeNotifier {
   static const _userIdKey = 'user_id';
   static const _userNameKey = 'user_name';
   static const _userEmailKey = 'user_email';
+  static const _buKey = 'business_unit_id';
+  static const _teamKey = 'team_id';
 
   final FlutterSecureStorage _storage;
 
@@ -19,51 +21,98 @@ class AuthRepository extends ChangeNotifier {
   int? _userId;
   String? _userName;
   String? _userEmail;
-  String _apiBaseUrl = ApiConfig.defaultBaseUrl;
+  int? _businessUnitId;
+  int? _teamId;
   bool _bootstrapped = false;
+  bool _refreshing = false;
 
-  String get apiBaseUrl => _apiBaseUrl;
+  String get apiBaseUrl => ApiConfig.defaultBaseUrl;
   String? get token => _token;
   int? get userId => _userId;
   String? get userName => _userName;
+  String? get userEmail => _userEmail;
+  int? get businessUnitId => _businessUnitId;
+  int? get teamId => _teamId;
   bool get isAuthenticated => _token != null && _token!.isNotEmpty;
   bool get isReady => _bootstrapped;
 
   Future<void> bootstrap() async {
-    _apiBaseUrl = await _storage.read(key: ApiConfig.apiBaseUrlKey) ?? ApiConfig.defaultBaseUrl;
     _token = await _storage.read(key: _tokenKey);
     _userName = await _storage.read(key: _userNameKey);
     _userEmail = await _storage.read(key: _userEmailKey);
-    final idRaw = await _storage.read(key: _userIdKey);
-    _userId = idRaw != null ? int.tryParse(idRaw) : null;
+    _userId = int.tryParse(await _storage.read(key: _userIdKey) ?? '');
+    _businessUnitId = int.tryParse(await _storage.read(key: _buKey) ?? '');
+    _teamId = int.tryParse(await _storage.read(key: _teamKey) ?? '');
+
+    if (isAuthenticated) {
+      await refreshSession(logoutOnFailure: true);
+    }
+
     _bootstrapped = true;
     notifyListeners();
   }
 
-  Future<void> saveApiBaseUrl(String url) async {
-    _apiBaseUrl = url.trim().isEmpty ? ApiConfig.defaultBaseUrl : url.trim();
-    await _storage.write(key: ApiConfig.apiBaseUrlKey, value: _apiBaseUrl);
-    notifyListeners();
-  }
-
-  ApiClient client() => apiClientForBaseUrl(_apiBaseUrl, token: _token);
+  ApiClient client() => apiClientForBaseUrl(
+        apiBaseUrl,
+        token: _token,
+        businessUnitId: _businessUnitId,
+        teamId: _teamId,
+      );
 
   Future<void> login({required String email, required String password}) async {
-    final client = apiClientForBaseUrl(_apiBaseUrl);
+    final client = apiClientForBaseUrl(apiBaseUrl);
     final json = await client.postJson('auth/login', body: LoginRequest(email: email, password: password).toJson());
     final response = LoginResponse.fromJson(json);
     if (response.accessToken == null || response.accessToken!.isEmpty) {
       throw ApiException('No access token in login response');
     }
-    _token = response.accessToken;
-    _userId = response.user?.id;
-    _userName = response.user?.name;
-    _userEmail = response.user?.email;
-    await _storage.write(key: _tokenKey, value: _token);
-    await _storage.write(key: _userIdKey, value: _userId?.toString());
-    await _storage.write(key: _userNameKey, value: _userName);
-    await _storage.write(key: _userEmailKey, value: _userEmail);
+    await _applyToken(response.accessToken!, user: response.user, email: email);
+  }
+
+  Future<bool> refreshSession({bool logoutOnFailure = false}) async {
+    if (!isAuthenticated || _refreshing) return isAuthenticated;
+    _refreshing = true;
+    try {
+      final client = apiClientForBaseUrl(apiBaseUrl, token: _token, businessUnitId: _businessUnitId, teamId: _teamId);
+      final json = await client.postJson('auth/refresh');
+      final newToken = json['access_token'] as String?;
+      if (newToken == null || newToken.isEmpty) {
+        throw ApiException('Token refresh failed', statusCode: 401);
+      }
+      await _persistToken(newToken);
+      notifyListeners();
+      return true;
+    } on ApiException catch (e) {
+      if (logoutOnFailure && e.statusCode == 401) {
+        await logout();
+      }
+      return false;
+    } catch (_) {
+      return false;
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  Future<void> _applyToken(String accessToken, {UserSummary? user, String? email}) async {
+    _token = accessToken;
+    _userId = user?.id;
+    _userName = user?.name;
+    _userEmail = user?.email ?? email;
+    _businessUnitId = user?.currentBusinessUnitId;
+    _teamId = user?.currentTeamId;
+    await _persistToken(accessToken);
+    if (_userId != null) await _storage.write(key: _userIdKey, value: _userId.toString());
+    if (_userName != null) await _storage.write(key: _userNameKey, value: _userName);
+    if (_userEmail != null) await _storage.write(key: _userEmailKey, value: _userEmail);
+    if (_businessUnitId != null) await _storage.write(key: _buKey, value: _businessUnitId.toString());
+    if (_teamId != null) await _storage.write(key: _teamKey, value: _teamId.toString());
     notifyListeners();
+  }
+
+  Future<void> _persistToken(String accessToken) async {
+    _token = accessToken;
+    await _storage.write(key: _tokenKey, value: accessToken);
   }
 
   Future<void> logout() async {
@@ -71,10 +120,11 @@ class AuthRepository extends ChangeNotifier {
     _userId = null;
     _userName = null;
     _userEmail = null;
-    await _storage.delete(key: _tokenKey);
-    await _storage.delete(key: _userIdKey);
-    await _storage.delete(key: _userNameKey);
-    await _storage.delete(key: _userEmailKey);
+    _businessUnitId = null;
+    _teamId = null;
+    for (final k in [_tokenKey, _userIdKey, _userNameKey, _userEmailKey, _buKey, _teamKey]) {
+      await _storage.delete(key: k);
+    }
     notifyListeners();
   }
 }

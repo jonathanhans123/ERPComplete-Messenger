@@ -1,4 +1,4 @@
-# Flutter
+# Flutter / Dart
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -6,15 +6,24 @@
 build/
 *.iml
 .idea/
-*.lock
 
-# Platform (regenerate with flutter create)
-android/
-ios/
-linux/
-macos/
-web/
-windows/
+# Android build artifacts (keep android/ source in repo)
+android/local.properties
+android/.gradle/
+android/.kotlin/
+**/android/**/build/
+**/android/captures/
+
+# iOS build artifacts (keep ios/ source when present)
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
 
 # Secrets
 *.env
