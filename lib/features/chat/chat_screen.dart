@@ -243,7 +243,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final wallpaper = prefs.wallpaperColor(Theme.of(context).brightness);
     final bgColor = wallpaper == Colors.transparent ? ext.chatBackground : wallpaper;
 
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: bgColor,
       appBar: AppBar(
         leading: widget.onBack != null
@@ -378,5 +378,17 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+
+    if (widget.onBack != null) {
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) widget.onBack!();
+        },
+        child: scaffold,
+      );
+    }
+
+    return scaffold;
   }
 }

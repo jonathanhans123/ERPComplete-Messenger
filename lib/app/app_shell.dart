@@ -79,11 +79,17 @@ class _MessengerHomeState extends State<MessengerHome> {
       body = ConversationsScreen(onSelect: _openChat);
     }
 
-    return Column(
-      children: [
-        Expanded(child: body),
-        MinimizedCallBar(onExpand: _expandCall),
-      ],
+    return PopScope(
+      canPop: _selected == null || isWide,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _selected != null && !isWide) _closeChat();
+      },
+      child: Column(
+        children: [
+          Expanded(child: body),
+          MinimizedCallBar(onExpand: _expandCall),
+        ],
+      ),
     );
   }
 }
