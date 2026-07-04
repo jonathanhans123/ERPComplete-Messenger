@@ -159,27 +159,73 @@ class ApiClient {
   }
 
   Map<String, dynamic> _decodeMap(int statusCode, String body, {required String path}) {
+    final isLogin = path.contains('auth/login');
+    Map<String, dynamic>? json;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) json = decoded;
+    } catch (_) {}
+
+    String? serverMessage() {
+      final msg = json?['message']?.toString().trim();
+      if (msg == null || msg.isEmpty) return null;
+      if (msg == 'Unauthorized' || msg == 'Forbidden') return null;
+      return msg;
+    }
+
     if (statusCode == 401) {
-      final isLogin = path.contains('auth/login');
       throw ApiException(
-        isLogin ? 'Invalid email or password.' : 'Session expired. Sign in again.',
+        isLogin
+            ? (serverMessage() ?? 'The email or password you entered is incorrect. Please try again.')
+            : 'Your session expired. Please sign in again.',
         statusCode: 401,
       );
     }
     if (statusCode == 403) {
-      throw ApiException('This action is unauthorized.', statusCode: 403);
+      if (isLogin && json?['two_factor_required'] == true) {
+        throw ApiException(
+          serverMessage() ?? 'Two-factor authentication is required. Enter your authenticator code.',
+          statusCode: 403,
+        );
+      }
+      throw ApiException(
+        isLogin
+            ? (serverMessage() ?? 'Sign in was denied. Check your account or contact your administrator.')
+            : (serverMessage() ?? 'You do not have permission to do that.'),
+        statusCode: 403,
+      );
+    }
+    if (statusCode == 422) {
+      final errors = json?['errors'];
+      if (errors is Map) {
+        for (final value in errors.values) {
+          if (value is List && value.isNotEmpty) {
+            throw ApiException(value.first.toString(), statusCode: 422);
+          }
+        }
+      }
+      throw ApiException(serverMessage() ?? 'Please check your email and password.', statusCode: 422);
+    }
+    if (statusCode == 429) {
+      throw ApiException(
+        isLogin
+            ? (serverMessage() ?? 'Please wait a moment and try again.')
+            : (serverMessage() ?? 'Too many requests. Please try again shortly.'),
+        statusCode: 429,
+      );
     }
     if (statusCode < 200 || statusCode >= 300) {
-      String msg = body;
-      try {
-        final j = jsonDecode(body);
-        if (j is Map && j['message'] != null) msg = j['message'].toString();
-        if (j is Map && j['error'] != null) msg = j['error'].toString();
-      } catch (_) {}
-      if (msg.contains('<html') || msg.length > 280) {
-        msg = 'Server error ($statusCode). Please try again.';
+      String msg = serverMessage() ?? body;
+      if (msg == body) {
+        try {
+          final err = json?['error']?.toString();
+          if (err != null && err.isNotEmpty && err != 'Unauthorized') msg = err;
+        } catch (_) {}
       }
-      throw ApiException(msg.isNotEmpty ? msg : 'Server error ($statusCode)', statusCode: statusCode);
+      if (msg.contains('<html') || msg.length > 280) {
+        msg = 'Something went wrong ($statusCode). Please try again.';
+      }
+      throw ApiException(msg.isNotEmpty ? msg : 'Something went wrong ($statusCode). Please try again.', statusCode: statusCode);
     }
     if (body.isEmpty) return {};
     final decoded = jsonDecode(body);
