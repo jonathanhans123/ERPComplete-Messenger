@@ -231,7 +231,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       child: ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
         itemCount: _items.length,
-        separatorBuilder: (_, __) => Divider(height: 1, indent: 78, color: ext.subtext.withValues(alpha: 0.15)),
+        separatorBuilder: (_, __) => Divider(height: 1, indent: 66, color: ext.subtext.withValues(alpha: 0.12)),
         itemBuilder: (context, index) {
           final c = _items[index];
           final muted = prefs.isMuted(c.id);
@@ -242,13 +242,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             onInfo: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ConversationInfoScreen(conversation: c))),
             onLongPressMenu: () => ConversationActions.showListMenuSheet(
               context,
-              conversation: c,
-              onChanged: _load,
-              muted: muted,
-            ),
-            onMenu: (value) => ConversationActions.handleMenuSelection(
-              context,
-              value: value,
               conversation: c,
               onChanged: _load,
               muted: muted,
