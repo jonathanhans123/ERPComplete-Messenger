@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/media/attachment_kind.dart';
 import '../../../core/models/api_models.dart';
 import '../../../theme/messenger_theme.dart';
+import '../../../widgets/message_media_widgets.dart';
 
 class DateDivider extends StatelessWidget {
   const DateDivider({super.key, required this.label});
@@ -34,11 +36,17 @@ class MessageBubble extends StatelessWidget {
     required this.message,
     this.showSender = false,
     this.onLongPress,
+    this.onPollVote,
+    this.onMediaOpen,
+    this.currentUserId,
   });
 
   final ChatMessage message;
   final bool showSender;
   final VoidCallback? onLongPress;
+  final void Function(String optionId)? onPollVote;
+  final void Function(ChatMessage message, AttachmentInfo info)? onMediaOpen;
+  final int? currentUserId;
 
   @override
   Widget build(BuildContext context) {
@@ -46,6 +54,7 @@ class MessageBubble extends StatelessWidget {
     final sent = message.isSent;
     final bubbleColor = sent ? ext.sentBubble : ext.receivedBubble;
     final textColor = sent ? ext.sentText : ext.receivedText;
+    final mediaHeavy = _isMediaHeavyMessage(message);
 
     return Padding(
       padding: EdgeInsets.only(left: sent ? 48 : 12, right: sent ? 12 : 48, top: 2, bottom: 2),
@@ -60,112 +69,115 @@ class MessageBubble extends StatelessWidget {
           GestureDetector(
             onLongPress: onLongPress,
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
+              constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (mediaHeavy ? 0.72 : 0.78)),
               child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: bubbleColor,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(12),
-                  topRight: const Radius.circular(12),
-                  bottomLeft: Radius.circular(sent ? 12 : 2),
-                  bottomRight: Radius.circular(sent ? 2 : 12),
-                ),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 2, offset: const Offset(0, 1)),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (message.isStarred)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.star, size: 12, color: Colors.amber.shade700),
-                          const SizedBox(width: 4),
-                          Text('Starred', style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.75), fontWeight: FontWeight.w600)),
-                        ],
-                      ),
-                    ),
-                  if (message.isForwarded)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.reply, size: 12, color: textColor.withValues(alpha: 0.7)),
-                          const SizedBox(width: 4),
-                          Text('Forwarded', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: textColor.withValues(alpha: 0.75))),
-                        ],
-                      ),
-                    ),
-                  if (message.isPinned)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.push_pin, size: 12, color: textColor.withValues(alpha: 0.7)),
-                          const SizedBox(width: 4),
-                          Text('Pinned', style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.7))),
-                        ],
-                      ),
-                    ),
-                  if (message.replyPreview != null)
-                    _ReplyQuote(
-                      sender: message.replyToSender,
-                      preview: message.replyPreview!,
-                      textColor: textColor,
-                    ),
-                  Text(
-                    message.body.isEmpty ? _typeLabel(message.type) : message.body,
-                    style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35),
+                padding: mediaHeavy ? const EdgeInsets.all(4) : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: bubbleColor,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(12),
+                    topRight: const Radius.circular(12),
+                    bottomLeft: Radius.circular(sent ? 12 : 2),
+                    bottomRight: Radius.circular(sent ? 2 : 12),
                   ),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      if (message.isEdited)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: Text('edited', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: textColor.withValues(alpha: 0.65))),
-                        ),
-                      if (message.time != null)
-                        Text(message.time!, style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.65))),
-                      if (sent) ...[
-                        const SizedBox(width: 4),
-                        _StatusTicks(status: message.status, isPending: message.isPending, color: textColor.withValues(alpha: 0.65)),
-                      ],
-                    ],
-                  ),
-                  if (message.reactions.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 4,
-                      runSpacing: 4,
-                      children: message.reactions.entries
-                          .map(
-                            (e) => Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.9),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: ext.subtext.withValues(alpha: 0.15)),
-                              ),
-                              child: Text('${e.key} ${e.value}', style: const TextStyle(fontSize: 13)),
-                            ),
-                          )
-                          .toList(),
-                    ),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 2, offset: const Offset(0, 1)),
                   ],
-                ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (message.isStarred)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.star, size: 12, color: Colors.amber.shade700),
+                            const SizedBox(width: 4),
+                            Text('Starred', style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.75), fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    if (message.isForwarded)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.reply, size: 12, color: textColor.withValues(alpha: 0.7)),
+                            const SizedBox(width: 4),
+                            Text('Forwarded', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: textColor.withValues(alpha: 0.75))),
+                          ],
+                        ),
+                      ),
+                    if (message.isPinned)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.push_pin, size: 12, color: textColor.withValues(alpha: 0.7)),
+                            const SizedBox(width: 4),
+                            Text('Pinned', style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.7))),
+                          ],
+                        ),
+                      ),
+                    if (message.replyPreview != null)
+                      _ReplyQuote(
+                        sender: message.replyToSender,
+                        preview: message.replyPreview!,
+                        textColor: textColor,
+                      ),
+                    _MessageBody(
+                      message: message,
+                      textColor: textColor,
+                      onPollVote: onPollVote,
+                      onMediaOpen: onMediaOpen,
+                      currentUserId: currentUserId,
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        if (message.isEdited && message.type != 'call')
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Text('edited', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: textColor.withValues(alpha: 0.65))),
+                          ),
+                        if (message.time != null)
+                          Text(message.time!, style: TextStyle(fontSize: 11, color: textColor.withValues(alpha: 0.65))),
+                        if (sent) ...[
+                          const SizedBox(width: 4),
+                          _StatusTicks(status: message.status, isPending: message.isPending, color: textColor.withValues(alpha: 0.65)),
+                        ],
+                      ],
+                    ),
+                    if (message.reactions.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: message.reactions.entries
+                            .map(
+                              (e) => Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.9),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: ext.subtext.withValues(alpha: 0.15)),
+                                ),
+                                child: Text('${e.key} ${e.value}', style: const TextStyle(fontSize: 13)),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-            ),
             ),
           ),
         ],
@@ -173,13 +185,190 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
+  static bool _isMediaHeavyMessage(ChatMessage message) {
+    if (message.type == 'image' || message.type == 'video' || message.type == 'voice' || message.type == 'location') {
+      return true;
+    }
+    final att = message.primaryAttachment;
+    if (att == null) return false;
+    final kind = AttachmentInfo.from(att, messageType: message.type).kind;
+    return kind == AttachmentKind.image ||
+        kind == AttachmentKind.video ||
+        kind == AttachmentKind.voice ||
+        kind == AttachmentKind.location;
+  }
+}
+
+class _MessageBody extends StatelessWidget {
+  const _MessageBody({
+    required this.message,
+    required this.textColor,
+    this.onPollVote,
+    this.onMediaOpen,
+    this.currentUserId,
+  });
+
+  final ChatMessage message;
+  final Color textColor;
+  final void Function(String optionId)? onPollVote;
+  final void Function(ChatMessage message, AttachmentInfo info)? onMediaOpen;
+  final int? currentUserId;
+
+  @override
+  Widget build(BuildContext context) {
+    if (message.type == 'call') {
+      final meta = message.callMeta;
+      final video = meta?.isVideo == true || message.body.toLowerCase().contains('video');
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(video ? Icons.videocam : Icons.call, size: 18, color: textColor.withValues(alpha: 0.85)),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              message.callDisplayLine,
+              style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final poll = message.pollAttachment;
+    if (poll != null) {
+      final options = (poll['options'] as List?)?.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+      final votes = poll['votes'] is Map ? Map<String, dynamic>.from(poll['votes'] as Map) : <String, dynamic>{};
+      final myVote = currentUserId != null ? votes['$currentUserId']?.toString() : null;
+      final question = poll['question'] as String? ?? message.body;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(question, style: TextStyle(color: textColor, fontSize: 15.5, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          ...options.map((opt) {
+            final id = '${opt['id']}';
+            final selected = myVote == id;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Material(
+                color: selected ? MessengerPalette.whatsAppGreen.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: onPollVote == null ? null : () => onPollVote!(id),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text('${opt['text']}', style: TextStyle(color: textColor, fontSize: 14))),
+                        Text('${opt['votes'] ?? 0}', style: TextStyle(color: textColor.withValues(alpha: 0.7), fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      );
+    }
+
+    final att = message.primaryAttachment;
+    if (att != null) {
+      final info = AttachmentInfo.from(att, messageType: message.type);
+      switch (info.kind) {
+        case AttachmentKind.image:
+          if (info.url != null) {
+            return ImageMessageTile(
+              url: info.url!,
+              onTap: onMediaOpen != null
+                  ? () => onMediaOpen!(message, info)
+                  : () => FullScreenImageViewer.open(context, info.url!),
+            );
+          }
+          return MediaUnavailableTile(label: info.name ?? 'Photo', textColor: textColor, hint: 'File was not saved — resend');
+        case AttachmentKind.video:
+          if (info.url != null) {
+            return VideoMessageTile(
+              url: info.url!,
+              name: info.name,
+              onTap: onMediaOpen != null ? () => onMediaOpen!(message, info) : null,
+            );
+          }
+          return MediaUnavailableTile(label: info.name ?? 'Video', textColor: textColor, hint: 'File was not saved — resend');
+        case AttachmentKind.voice:
+          if (info.url != null) {
+            return VoiceMessagePlayer(url: info.url!, durationLabel: info.duration, textColor: textColor);
+          }
+          return MediaUnavailableTile(label: 'Voice message', textColor: textColor, hint: 'File was not saved — resend');
+        case AttachmentKind.location:
+          if (info.latitude != null && info.longitude != null) {
+            return LocationMessageTile(
+              latitude: info.latitude!,
+              longitude: info.longitude!,
+              address: info.address,
+              mapsUrl: info.url,
+              textColor: textColor,
+            );
+          }
+          break;
+        case AttachmentKind.contact:
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.person, color: textColor.withValues(alpha: 0.8)),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${info.raw['name']}', style: TextStyle(color: textColor, fontWeight: FontWeight.w600)),
+                  Text('${info.raw['phone']}', style: TextStyle(color: textColor.withValues(alpha: 0.75), fontSize: 13)),
+                ],
+              ),
+            ],
+          );
+        case AttachmentKind.file:
+          return FileMessageTile(
+            name: info.name ?? 'Attachment',
+            url: info.url,
+            textColor: textColor,
+          );
+        default:
+          break;
+      }
+    }
+
+    final urls = extractUrlsFromText(message.body);
+    if (urls.isNotEmpty && message.body.trim().isNotEmpty) {
+      final url = urls.first;
+      final bodyWithoutUrl = message.body.replaceFirst(url, '').trim();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (bodyWithoutUrl.isNotEmpty)
+            Text(bodyWithoutUrl, style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35)),
+          if (bodyWithoutUrl.isNotEmpty) const SizedBox(height: 8),
+          LinkPreviewTile(url: url, textColor: textColor),
+        ],
+      );
+    }
+
+    if (message.body.isEmpty) {
+      return Text(_typeLabel(message.type), style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35));
+    }
+
+    return Text(message.body, style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35));
+  }
+
   static String _typeLabel(String type) {
     return switch (type) {
-      'file' => '📎 Attachment',
-      'image' => '🖼 Photo',
-      'voice' => '🎤 Voice message',
-      'call' => '📞 Call',
-      'erp_card' => '📋 ERP card',
+      'file' => 'Attachment',
+      'image' => 'Photo',
+      'voice' => 'Voice message',
+      'call' => 'Call',
+      'erp_card' => 'ERP card',
+      'location' => 'Location',
+      'contact' => 'Contact',
       _ => '[$type]',
     };
   }

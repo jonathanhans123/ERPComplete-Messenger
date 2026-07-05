@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -14,6 +16,8 @@ class AuthRepository extends ChangeNotifier {
   static const _userEmailKey = 'user_email';
   static const _buKey = 'business_unit_id';
   static const _teamKey = 'team_id';
+  static const _bootstrapRefreshTimeout = Duration(seconds: 10);
+  static const _storageReadTimeout = Duration(seconds: 8);
 
   final FlutterSecureStorage _storage;
 
@@ -37,19 +41,37 @@ class AuthRepository extends ChangeNotifier {
   bool get isReady => _bootstrapped;
 
   Future<void> bootstrap() async {
-    _token = await _storage.read(key: _tokenKey);
-    _userName = await _storage.read(key: _userNameKey);
-    _userEmail = await _storage.read(key: _userEmailKey);
-    _userId = int.tryParse(await _storage.read(key: _userIdKey) ?? '');
-    _businessUnitId = int.tryParse(await _storage.read(key: _buKey) ?? '');
-    _teamId = int.tryParse(await _storage.read(key: _teamKey) ?? '');
-
-    if (isAuthenticated) {
-      await refreshSession(logoutOnFailure: true);
+    try {
+      await _loadStoredCredentials();
+      if (isAuthenticated) {
+        await refreshSession(logoutOnFailure: true).timeout(
+          _bootstrapRefreshTimeout,
+          onTimeout: () => false,
+        );
+      }
+    } catch (e, st) {
+      debugPrint('[AuthRepository] bootstrap failed: $e\n$st');
+    } finally {
+      _bootstrapped = true;
+      notifyListeners();
     }
+  }
 
-    _bootstrapped = true;
-    notifyListeners();
+  Future<void> _loadStoredCredentials() async {
+    _token = await _readStorage(_tokenKey);
+    _userName = await _readStorage(_userNameKey);
+    _userEmail = await _readStorage(_userEmailKey);
+    _userId = int.tryParse(await _readStorage(_userIdKey) ?? '');
+    _businessUnitId = int.tryParse(await _readStorage(_buKey) ?? '');
+    _teamId = int.tryParse(await _readStorage(_teamKey) ?? '');
+  }
+
+  Future<String?> _readStorage(String key) async {
+    try {
+      return await _storage.read(key: key).timeout(_storageReadTimeout, onTimeout: () => null);
+    } catch (_) {
+      return null;
+    }
   }
 
   ApiClient client() => apiClientForBaseUrl(

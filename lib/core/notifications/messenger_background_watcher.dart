@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 
+import '../api/api_throttle_guard.dart';
 import '../auth/auth_repository.dart';
 import '../messaging/messaging_repository.dart';
 import '../notifications/messenger_notification_service.dart';
@@ -15,7 +16,7 @@ class MessengerBackgroundWatcher {
 
   void start(BuildContext context) {
     _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _tick(context));
+    _timer = Timer.periodic(const Duration(seconds: 60), (_) => _tick(context));
   }
 
   void stop() {
@@ -25,6 +26,7 @@ class MessengerBackgroundWatcher {
 
   Future<void> _tick(BuildContext context) async {
     if (!context.mounted) return;
+    if (ApiThrottleGuard.instance.isBlocked) return;
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     if (lifecycle != AppLifecycleState.paused && lifecycle != AppLifecycleState.inactive) return;
 

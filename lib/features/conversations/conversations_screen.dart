@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/api_throttle_guard.dart';
 import '../../core/auth/auth_repository.dart';
+import '../../core/cache/messenger_local_cache.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
 import '../../core/preferences/messenger_preferences.dart';
@@ -34,6 +36,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   List<ConversationSummary> _items = [];
   bool _loading = true;
   String? _error;
+  String? _rateLimitNote;
   final _search = TextEditingController();
   int _totalUnread = 0;
   Timer? _refreshTimer;
@@ -53,7 +56,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     _initRepo();
     _load();
     _search.addListener(_onSearchChanged);
-    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) => _load(silent: true));
+    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _load(silent: true));
   }
 
   void _initRepo() {
@@ -77,23 +80,58 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
   Future<void> _load({bool silent = false}) async {
     if (!silent) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
+      final cached = await MessengerLocalCache.instance.loadConversations();
+      if (cached.isNotEmpty && mounted) {
+        setState(() {
+          _items = cached;
+          _loading = false;
+        });
+      } else if (!silent) {
+        setState(() {
+          _loading = true;
+          _error = null;
+          _rateLimitNote = null;
+        });
+      }
+    }
+    if (ApiThrottleGuard.instance.isBlocked) {
+      if (mounted) {
+        setState(() {
+          _rateLimitNote = ApiThrottleGuard.instance.userMessage;
+          _loading = false;
+          _error = _items.isEmpty ? ApiThrottleGuard.instance.userMessage : null;
+        });
+      }
+      return;
     }
     try {
       final q = _search.text.trim();
       final items = await _repo.fetchConversations(filter: _filter, search: q.isEmpty ? null : q);
-      final unread = await _repo.fetchUnreadCount();
+      await MessengerLocalCache.instance.saveConversations(items);
+      int unread = _totalUnread;
+      try {
+        unread = await _repo.fetchUnreadCount();
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _items = items;
           _totalUnread = unread;
+          _rateLimitNote = null;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted && !silent) setState(() => _error = formatApiError(e));
+      if (mounted && !silent) {
+        setState(() {
+          if (_items.isEmpty) {
+            _error = formatApiError(e);
+          } else if (e is ApiException && e.statusCode == 429) {
+            _rateLimitNote = formatApiError(e);
+          } else {
+            _rateLimitNote = formatApiError(e);
+          }
+        });
+      }
     } finally {
       if (mounted && !silent) setState(() => _loading = false);
     }
@@ -182,6 +220,20 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             ),
           ),
           const SizedBox(height: 4),
+          if (_rateLimitNote != null)
+            Material(
+              color: Colors.amber.shade100,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.schedule, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_rateLimitNote!, style: const TextStyle(fontSize: 13))),
+                  ],
+                ),
+              ),
+            ),
           Expanded(child: _buildBody(ext, context.watch<MessengerPreferences>())),
         ],
       ),

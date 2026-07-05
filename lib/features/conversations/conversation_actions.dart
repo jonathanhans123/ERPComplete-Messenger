@@ -7,6 +7,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/calls/call_session_controller.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
+import '../../core/notifications/messenger_notification_service.dart';
 import '../../core/preferences/messenger_preferences.dart';
 import '../../theme/messenger_theme.dart';
 import '../../widgets/messenger_avatar.dart';
@@ -71,17 +72,23 @@ class ConversationActions {
     }
   }
 
-  static void startCall(BuildContext context, ConversationSummary c, {required bool video}) {
+  static Future<void> startCall(BuildContext context, ConversationSummary c, {required bool video}) async {
     final auth = context.read<AuthRepository>();
     final call = context.read<CallSessionController>();
     final repo = repoOf(context);
-    call.start(
+    if (call.isActive) {
+      await call.end();
+      await MessengerNotificationService.instance.clearAllCallNotifications();
+    }
+    await call.start(
       conv: c,
       messagingRepo: repo,
       callerName: auth.userName ?? 'User',
       video: video,
     );
-    Navigator.push(context, MaterialPageRoute(builder: (_) => const CallScreen()));
+    if (context.mounted && call.isActive) {
+      await Navigator.push(context, MaterialPageRoute(builder: (_) => const CallScreen()));
+    }
   }
 
   static void _snack(BuildContext context, String msg) {
@@ -137,6 +144,8 @@ class ConversationActions {
 
   static List<PopupMenuEntry<String>> chatMenuItems(ConversationSummary c, {bool muted = false}) {
     return [
+      const PopupMenuItem(value: 'search', child: _MenuRow(icon: Icons.search, label: 'Search in chat')),
+      const PopupMenuItem(value: 'media', child: _MenuRow(icon: Icons.photo_library_outlined, label: 'Media, files & links')),
       const PopupMenuItem(value: 'wallpaper', child: _MenuRow(icon: Icons.wallpaper_outlined, label: 'Wallpaper')),
       const PopupMenuItem(value: 'voice', child: _MenuRow(icon: Icons.call_outlined, label: 'Voice call')),
       const PopupMenuItem(value: 'video', child: _MenuRow(icon: Icons.videocam_outlined, label: 'Video call')),

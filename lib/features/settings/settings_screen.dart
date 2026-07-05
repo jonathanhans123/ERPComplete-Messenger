@@ -1,7 +1,9 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../config/api_config.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/preferences/messenger_preferences.dart';
 import '../../core/theme/theme_controller.dart';
@@ -40,7 +42,9 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.wallpaper_outlined),
             title: const Text('Chat wallpaper'),
-            subtitle: Text(ChatWallpaper.byId(prefs.wallpaperId).name),
+            subtitle: Text(
+              prefs.customWallpaperPath != null ? 'Custom photo' : ChatWallpaper.byId(prefs.wallpaperId).name,
+            ),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WallpaperPickerScreen())),
           ),
           _SectionHeader(title: 'Notifications (mobile)'),
@@ -68,11 +72,6 @@ class SettingsScreen extends StatelessWidget {
           ),
           const Divider(height: 32),
           _SectionHeader(title: 'About'),
-          ListTile(
-            leading: const Icon(Icons.dns_outlined),
-            title: const Text('Server'),
-            subtitle: Text(ApiConfig.defaultBaseUrl, style: TextStyle(color: ext.subtext, fontSize: 12)),
-          ),
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('Version'),
@@ -142,39 +141,84 @@ class SettingsScreen extends StatelessWidget {
 class WallpaperPickerScreen extends StatelessWidget {
   const WallpaperPickerScreen({super.key});
 
+  Future<void> _pickCustomImage(BuildContext context) async {
+    final prefs = context.read<MessengerPreferences>();
+    final result = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: false);
+    if (result == null || result.files.isEmpty) return;
+    final path = result.files.single.path;
+    if (path == null) return;
+    await prefs.setCustomWallpaperFromFile(File(path));
+    if (context.mounted) Navigator.pop(context);
+  }
+
   @override
   Widget build(BuildContext context) {
     final prefs = context.watch<MessengerPreferences>();
     final brightness = Theme.of(context).brightness;
+    final hasCustom = prefs.customWallpaperPath != null && File(prefs.customWallpaperPath!).existsSync();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Chat wallpaper')),
-      body: GridView.builder(
-        padding: const EdgeInsets.all(16),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3, crossAxisSpacing: 12, mainAxisSpacing: 12),
-        itemCount: ChatWallpaper.presets.length,
-        itemBuilder: (context, index) {
-          final wp = ChatWallpaper.presets[index];
-          final selected = prefs.wallpaperId == wp.id;
-          final color = wp.colorFor(brightness);
-          return InkWell(
-            onTap: () => prefs.setWallpaper(wp.id),
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              decoration: BoxDecoration(
-                color: wp.id == ChatWallpaper.defaultId ? messengerExt(context).chatBackground : color,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: selected ? MessengerPalette.whatsAppGreen : Colors.grey.withValues(alpha: 0.3),
-                  width: selected ? 3 : 1,
-                ),
-              ),
-              child: Center(
-                child: Text(wp.name, style: TextStyle(fontWeight: selected ? FontWeight.w700 : FontWeight.w500, fontSize: 12)),
-              ),
+      body: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.photo_library_outlined),
+            title: const Text('Choose your own photo'),
+            subtitle: const Text('Use a picture from your gallery'),
+            onTap: () => _pickCustomImage(context),
+          ),
+          if (hasCustom)
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: MessengerPalette.danger),
+              title: const Text('Remove custom photo', style: TextStyle(color: MessengerPalette.danger)),
+              onTap: () => prefs.clearCustomWallpaper(),
             ),
-          );
-        },
+          const Divider(),
+          Expanded(
+            child: GridView.builder(
+              padding: const EdgeInsets.all(16),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3, crossAxisSpacing: 12, mainAxisSpacing: 12),
+              itemCount: ChatWallpaper.presets.length + (hasCustom ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (hasCustom && index == 0) {
+                  return InkWell(
+                    onTap: () {},
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: MessengerPalette.whatsAppGreen, width: 3),
+                        image: DecorationImage(image: FileImage(File(prefs.customWallpaperPath!)), fit: BoxFit.cover),
+                      ),
+                      child: const Align(alignment: Alignment.bottomCenter, child: Padding(padding: EdgeInsets.all(6), child: Text('Your photo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, shadows: [Shadow(blurRadius: 4)])))),
+                    ),
+                  );
+                }
+                final wpIndex = hasCustom ? index - 1 : index;
+                final wp = ChatWallpaper.presets[wpIndex];
+                final selected = !hasCustom && prefs.wallpaperId == wp.id;
+                final color = wp.colorFor(brightness);
+                return InkWell(
+                  onTap: () => prefs.setWallpaper(wp.id),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: wp.id == ChatWallpaper.defaultId ? messengerExt(context).chatBackground : color,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: selected ? MessengerPalette.whatsAppGreen : Colors.grey.withValues(alpha: 0.3),
+                        width: selected ? 3 : 1,
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(wp.name, style: TextStyle(fontWeight: selected ? FontWeight.w700 : FontWeight.w500, fontSize: 12)),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

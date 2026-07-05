@@ -1,10 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/auth/auth_repository.dart';
+import '../core/notifications/messenger_notification_service.dart';
 import '../core/calls/call_session_controller.dart';
+import '../core/calls/incoming_call_watcher.dart';
 import '../core/models/api_models.dart';
 import '../core/notifications/messenger_background_watcher.dart';
+import '../widgets/incoming_call_banner.dart';
+import '../widgets/incoming_call_overlay.dart';
 import '../features/login/login_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/conversations/conversations_screen.dart';
@@ -21,6 +27,21 @@ class MessengerHome extends StatefulWidget {
 class _MessengerHomeState extends State<MessengerHome> {
   ConversationSummary? _selected;
   final _backgroundWatcher = MessengerBackgroundWatcher();
+  final _incomingCallWatcher = IncomingCallWatcher();
+  bool _recovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _recoverCallState());
+  }
+
+  Future<void> _recoverCallState() async {
+    if (_recovered || !mounted) return;
+    _recovered = true;
+    await MessengerNotificationService.instance.clearAllCallNotifications();
+    await context.read<CallSessionController>().recoverAfterLaunch();
+  }
 
   void _openChat(ConversationSummary conversation) {
     setState(() => _selected = conversation);
@@ -39,12 +60,14 @@ class _MessengerHomeState extends State<MessengerHome> {
   @override
   void dispose() {
     _backgroundWatcher.stop();
+    _incomingCallWatcher.stop();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     _backgroundWatcher.start(context);
+    _incomingCallWatcher.start(context);
     final width = MediaQuery.sizeOf(context).width;
     final isWide = width >= 900;
 
@@ -84,10 +107,23 @@ class _MessengerHomeState extends State<MessengerHome> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && _selected != null && !isWide) _closeChat();
       },
-      child: Column(
+      child: Stack(
         children: [
-          Expanded(child: body),
-          MinimizedCallBar(onExpand: _expandCall),
+          Column(
+            children: [
+              Expanded(child: body),
+              MinimizedCallBar(onExpand: _expandCall),
+            ],
+          ),
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: IncomingCallBanner(),
+          ),
+          const Positioned.fill(
+            child: IncomingCallOverlay(),
+          ),
         ],
       ),
     );
@@ -141,6 +177,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && mounted) {
       context.read<AuthRepository>().refreshSession(logoutOnFailure: true);
+      unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
+      unawaited(context.read<CallSessionController>().recoverAfterLaunch());
     }
   }
 

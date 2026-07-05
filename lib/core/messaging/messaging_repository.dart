@@ -29,10 +29,15 @@ class MessagingRepository {
   Future<List<ConversationSummary>> fetchConversations({
     ConversationFilter filter = ConversationFilter.all,
     String? search,
+    bool bypassThrottle = false,
   }) async {
     final query = _filterQuery(filter);
     if (search != null && search.trim().isNotEmpty) query['search'] = search.trim();
-    final json = await _client().getJson('messaging/conversations', query: query);
+    final json = await _client().getJson(
+      'messaging/conversations',
+      query: query,
+      bypassThrottle: bypassThrottle,
+    );
     final data = json['data'];
     List<dynamic> list;
     if (data is Map<String, dynamic>) {
@@ -112,19 +117,84 @@ class MessagingRepository {
     required String callSessionId,
     required String roomName,
     int? messageId,
+    int? durationSeconds,
+    String? callOutcome,
   }) async {
     await _client().postJson('messaging/conversations/$conversationId/call-signal', body: {
       'action': action,
       'call_session_id': callSessionId,
       'room_name': roomName,
       if (messageId != null) 'message_id': messageId,
+      if (durationSeconds != null) 'duration_seconds': durationSeconds,
+      if (callOutcome != null && callOutcome.isNotEmpty) 'call_outcome': callOutcome,
     });
   }
 
-  Future<List<ChatMessage>> fetchMessages(int conversationId, {int page = 1}) async {
+  Future<ChatMessage> sendCallMessage({
+    required int conversationId,
+    required String sessionId,
+    required String roomName,
+    bool video = false,
+  }) async {
+    final meta = {
+      'call_session_id': sessionId,
+      'room_name': roomName,
+      'phase': 'ringing',
+      'call_kind': video ? 'video' : 'voice',
+    };
+    final json = await _client().postForm('messaging/messages', {
+      'conversation_id': '$conversationId',
+      'type': 'call',
+      'body': video ? 'Video call' : 'Voice call',
+      'attachments': jsonEncode([meta]),
+    });
+    return _parseMessage(json);
+  }
+
+  Future<ChatMessage> sendAttachmentMessage({
+    required int conversationId,
+    required String type,
+    String? body,
+    List<Map<String, dynamic>>? attachments,
+    File? file,
+    String? fileField,
+  }) async {
+    if (file != null) {
+      final json = await _client().postMultipart(
+        'messaging/messages',
+        fields: {
+          'conversation_id': '$conversationId',
+          'type': type,
+          if (body != null && body.isNotEmpty) 'body': body,
+          if (attachments != null) 'attachments': jsonEncode(attachments),
+        },
+        files: [(field: fileField ?? 'files[]', file: file, filename: file.path.split(Platform.pathSeparator).last)],
+      );
+      return _parseMessage(json);
+    }
+    final json = await _client().postForm('messaging/messages', {
+      'conversation_id': '$conversationId',
+      'type': type,
+      if (body != null) 'body': body,
+      if (attachments != null) 'attachments': jsonEncode(attachments),
+    });
+    return _parseMessage(json);
+  }
+
+  Future<ChatMessage> votePoll(int messageId, String optionId) async {
+    final json = await _client().postJson('messaging/messages/$messageId/poll-vote', body: {'option_id': optionId});
+    return _parseMessage(json);
+  }
+
+  Future<List<ChatMessage>> fetchMessages(
+    int conversationId, {
+    int page = 1,
+    bool bypassThrottle = false,
+  }) async {
     final json = await _client().getJson(
       'messaging/conversations/$conversationId/messages',
       query: {'page': '$page'},
+      bypassThrottle: bypassThrottle,
     );
     final data = json['data'] ?? json;
     final list = (data is Map ? data['messages'] : null) as List? ?? json['messages'] as List? ?? [];
@@ -159,7 +229,7 @@ class MessagingRepository {
         'type': 'file',
         if (caption != null && caption.isNotEmpty) 'body': caption,
       },
-      files: [(field: 'attachments[]', file: file, filename: file.path.split(Platform.pathSeparator).last)],
+      files: [(field: 'files[]', file: file, filename: file.path.split(Platform.pathSeparator).last)],
     );
     return _parseMessage(json);
   }
@@ -249,7 +319,8 @@ class MessagingRepository {
       'name': displayName,
       if (identity != null) 'identity': identity,
     });
-    return LiveCallToken.fromJson(json);
+    final data = json['data'] ?? json;
+    return LiveCallToken.fromJson(data as Map<String, dynamic>);
   }
 
   static String messengerCallRoom(int conversationId) => 'messaging-call-$conversationId';

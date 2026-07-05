@@ -1,0 +1,22 @@
+subprojects { subproject ->
+    subproject.afterEvaluate {
+        def androidExt = subproject.extensions.findByName("android")
+        if (androidExt != null) {
+            try {
+                androidExt.compileSdkVersion 36
+            } catch (ignored) {
+                try {
+                    androidExt.compileSdk = 36
+                } catch (ignored2) {
+                }
+            }
+            try {
+                androidExt.compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            } catch (ignored) {
+            }
+        }
+    }
+}

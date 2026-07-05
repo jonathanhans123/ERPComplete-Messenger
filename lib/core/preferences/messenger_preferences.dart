@@ -1,19 +1,23 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// Local prefs (wallpaper, muted chats) — mirrors web localStorage keys.
 class MessengerPreferences extends ChangeNotifier {
   MessengerPreferences(this._storage);
 
   static const _wallpaperKey = 'chat_wallpaper';
+  static const _customWallpaperKey = 'chat_wallpaper_custom_path';
   static const _mutedKey = 'muted_conversations';
   static const _starredKey = 'starred_messages';
   static const _pushKey = 'push_notifications_enabled';
 
   final FlutterSecureStorage _storage;
   String _wallpaper = ChatWallpaper.defaultId;
+  String? _customWallpaperPath;
   Set<int> _mutedConversationIds = {};
   Map<int, Set<int>> _starredByConversation = {};
   bool _pushNotificationsEnabled = true;
@@ -21,11 +25,13 @@ class MessengerPreferences extends ChangeNotifier {
 
   bool get isLoaded => _loaded;
   String get wallpaperId => _wallpaper;
+  String? get customWallpaperPath => _customWallpaperPath;
   bool get pushNotificationsEnabled => _pushNotificationsEnabled;
   Set<int> get mutedConversationIds => Set.unmodifiable(_mutedConversationIds);
 
   Future<void> load() async {
     _wallpaper = await _storage.read(key: _wallpaperKey) ?? ChatWallpaper.defaultId;
+    _customWallpaperPath = await _storage.read(key: _customWallpaperKey);
     _pushNotificationsEnabled = (await _storage.read(key: _pushKey)) != 'false';
     final mutedRaw = await _storage.read(key: _mutedKey);
     if (mutedRaw != null && mutedRaw.isNotEmpty) {
@@ -53,7 +59,39 @@ class MessengerPreferences extends ChangeNotifier {
 
   Future<void> setWallpaper(String id) async {
     _wallpaper = id;
+    _customWallpaperPath = null;
     await _storage.write(key: _wallpaperKey, value: id);
+    await _storage.delete(key: _customWallpaperKey);
+    notifyListeners();
+  }
+
+  Future<void> setCustomWallpaperFromFile(File source) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final wallpapersDir = Directory('${dir.path}/wallpapers');
+    if (!await wallpapersDir.exists()) {
+      await wallpapersDir.create(recursive: true);
+    }
+    final dest = File('${wallpapersDir.path}/custom_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await source.copy(dest.path);
+    _wallpaper = ChatWallpaper.customId;
+    _customWallpaperPath = dest.path;
+    await _storage.write(key: _wallpaperKey, value: ChatWallpaper.customId);
+    await _storage.write(key: _customWallpaperKey, value: dest.path);
+    notifyListeners();
+  }
+
+  Future<void> clearCustomWallpaper() async {
+    final old = _customWallpaperPath;
+    _customWallpaperPath = null;
+    _wallpaper = ChatWallpaper.defaultId;
+    await _storage.delete(key: _customWallpaperKey);
+    await _storage.write(key: _wallpaperKey, value: ChatWallpaper.defaultId);
+    if (old != null) {
+      try {
+        final f = File(old);
+        if (f.existsSync()) await f.delete();
+      } catch (_) {}
+    }
     notifyListeners();
   }
 
@@ -80,6 +118,9 @@ class MessengerPreferences extends ChangeNotifier {
   }
 
   Color wallpaperColor(Brightness brightness) {
+    if (_customWallpaperPath != null && File(_customWallpaperPath!).existsSync()) {
+      return Colors.transparent;
+    }
     return ChatWallpaper.byId(_wallpaper).colorFor(brightness);
   }
 
@@ -124,6 +165,7 @@ class ChatWallpaper {
   final Color? darkColor;
 
   static const defaultId = 'default';
+  static const customId = 'custom';
 
   static const presets = [
     ChatWallpaper(id: 'default', name: 'Default'),

@@ -1,3 +1,5 @@
+import '../media/media_url_resolver.dart';
+
 enum ConversationFilter { all, unread, groups, teams, operations, archived }
 
 class LoginRequest {
@@ -94,6 +96,7 @@ class ConversationSummary {
     this.avatarInitials,
     this.avatarUrl,
     this.lastMessagePreview,
+    this.lastMessageType,
     this.lastMessageTime,
     this.unreadCount = 0,
     this.isGroup = false,
@@ -112,6 +115,7 @@ class ConversationSummary {
       avatarInitials: initialsFrom(json['name'] as String?),
       avatarUrl: json['avatar'] as String?,
       lastMessagePreview: last?['body'] as String? ?? last?['preview'] as String?,
+      lastMessageType: last?['type'] as String?,
       lastMessageTime: last?['time'] as String?,
       unreadCount: json['unread'] as int? ?? json['unread_count'] as int? ?? 0,
       isGroup: json['type'] == 'group',
@@ -135,6 +139,7 @@ class ConversationSummary {
       avatarInitials: avatarInitials,
       avatarUrl: avatarUrl,
       lastMessagePreview: lastMessagePreview,
+      lastMessageType: lastMessageType,
       lastMessageTime: lastMessageTime,
       unreadCount: unreadCount,
       isGroup: isGroup,
@@ -151,6 +156,7 @@ class ConversationSummary {
   final String? avatarInitials;
   final String? avatarUrl;
   final String? lastMessagePreview;
+  final String? lastMessageType;
   final String? lastMessageTime;
   final int unreadCount;
   final bool isGroup;
@@ -248,6 +254,40 @@ class ConversationDetail {
   final String channelKind;
 }
 
+class CallMessageMeta {
+  CallMessageMeta({
+    required this.callSessionId,
+    required this.roomName,
+    this.phase = 'ringing',
+    this.callKind = 'voice',
+    this.durationSeconds,
+    this.callOutcome,
+    this.callConnected = false,
+  });
+
+  factory CallMessageMeta.fromJson(Map<String, dynamic> json) {
+    return CallMessageMeta(
+      callSessionId: json['call_session_id'] as String? ?? '',
+      roomName: json['room_name'] as String? ?? '',
+      phase: json['phase'] as String? ?? 'ringing',
+      callKind: json['call_kind'] as String? ?? 'voice',
+      durationSeconds: json['duration_seconds'] as int?,
+      callOutcome: json['call_outcome'] as String?,
+      callConnected: json['call_connected'] == true || json['call_connected'] == 1,
+    );
+  }
+
+  final String callSessionId;
+  final String roomName;
+  final String phase;
+  final String callKind;
+  final int? durationSeconds;
+  final String? callOutcome;
+  final bool callConnected;
+
+  bool get isVideo => callKind == 'video';
+}
+
 class ChatMessage {
   ChatMessage({
     required this.id,
@@ -269,6 +309,7 @@ class ChatMessage {
     this.replyToId,
     this.replyPreview,
     this.replyToSender,
+    this.attachments = const [],
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json, int currentUserId) {
@@ -278,6 +319,7 @@ class ChatMessage {
         json['sender_name'] as String? ??
         (user is Map ? user['name'] as String? : null) ??
         'Unknown';
+    final msgType = json['type'] as String? ?? 'text';
 
     final replyTo = json['reply_to'];
     String? replyPreview;
@@ -293,6 +335,8 @@ class ChatMessage {
       replyToSender = json['reply_to_sender'] as String?;
     }
 
+    final atts = _parseAttachments(json['attachments']);
+
     return ChatMessage(
       id: json['id'] as int? ?? 0,
       body: json['body'] as String? ?? '',
@@ -302,19 +346,49 @@ class ChatMessage {
       time: json['time'] as String? ?? _timeFromIso(json['created_at']),
       date: json['date'] as String? ?? _dateFromIso(json['created_at']),
       createdAt: json['created_at'] as String?,
-      type: json['type'] as String? ?? 'text',
+      type: msgType,
       status: json['status'] as String?,
       isPinned: json['is_pinned'] as bool? ?? json['pinned'] as bool? ?? false,
       isForwarded: json['is_forwarded'] as bool? ?? false,
-      isEdited: json['edited'] as bool? ?? _isEdited(json),
+      isEdited: msgType == 'call' ? false : (json['edited'] as bool? ?? _isEdited(json)),
       reactions: normalizeReactions(json['reactions']),
       replyToId: replyToId,
       replyPreview: replyPreview,
       replyToSender: replyToSender,
+      attachments: atts,
     );
   }
 
+  static List<Map<String, dynamic>> _parseAttachments(dynamic raw) {
+    List<Map<String, dynamic>> list;
+    if (raw is List) {
+      list = raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    } else if (raw is Map) {
+      list = [Map<String, dynamic>.from(raw)];
+    } else {
+      return [];
+    }
+    return list.map((att) {
+      final copy = Map<String, dynamic>.from(att);
+      final path = copy['path'];
+      if (path == false || path == null || path == '') {
+        copy.remove('path');
+      }
+      final url = copy['url'];
+      if (url == null || url == false || (url is String && url.trim().isEmpty)) {
+        copy.remove('url');
+      } else if (url is String) {
+        copy['url'] = MediaUrlResolver.resolve(url);
+      }
+      if (path is String && path.isNotEmpty && (copy['url'] == null || copy['url'] == '')) {
+        copy['url'] = MediaUrlResolver.resolve('/storage/$path');
+      }
+      return copy;
+    }).toList();
+  }
+
   static bool _isEdited(Map<String, dynamic> json) {
+    if (json['type'] == 'call') return false;
     if (json['edited'] == true) return true;
     final created = json['created_at'] as String?;
     final updated = json['updated_at'] as String?;
@@ -390,6 +464,8 @@ class ChatMessage {
     int? replyToId,
     String? replyPreview,
     String? replyToSender,
+    List<Map<String, dynamic>>? attachments,
+    String? type,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -400,7 +476,7 @@ class ChatMessage {
       time: time,
       date: date,
       createdAt: createdAt,
-      type: type,
+      type: type ?? this.type,
       status: status ?? this.status,
       isPinned: isPinned ?? this.isPinned,
       isForwarded: isForwarded,
@@ -411,8 +487,82 @@ class ChatMessage {
       replyToId: replyToId ?? this.replyToId,
       replyPreview: replyPreview ?? this.replyPreview,
       replyToSender: replyToSender ?? this.replyToSender,
+      attachments: attachments ?? this.attachments,
     );
   }
+
+  Map<String, dynamic>? get primaryAttachment => attachments.isNotEmpty ? attachments.first : null;
+
+  CallMessageMeta? get callMeta {
+    if (type != 'call') return null;
+    for (final a in attachments) {
+      if (a.containsKey('call_session_id') || a.containsKey('room_name')) {
+        return CallMessageMeta.fromJson(a);
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? get pollAttachment {
+    for (final a in attachments) {
+      if (a['type'] == 'poll') return a;
+    }
+    final p = primaryAttachment;
+    return p != null && p['type'] == 'poll' ? p : null;
+  }
+
+  String get callDisplayLine {
+    final meta = callMeta;
+    if (meta == null) return body.isNotEmpty ? body : 'Call';
+    final video = meta.isVideo || body.toLowerCase().contains('video');
+    final outcome = (meta.callOutcome ?? '').toLowerCase();
+    final sentByMe = isSent;
+
+    if (meta.phase == 'live') {
+      return video ? 'Video call in progress' : 'Voice call in progress';
+    }
+
+    if (meta.phase == 'declined' ||
+        outcome == 'missed' ||
+        outcome == 'rejected' ||
+        outcome == 'cancelled') {
+      final o = outcome.isNotEmpty ? outcome : 'missed';
+      if (o == 'rejected') {
+        return sentByMe
+            ? (video ? 'Video call declined' : 'Call declined')
+            : (video ? 'Declined video call' : 'Declined call');
+      }
+      if (o == 'cancelled') {
+        return sentByMe
+            ? (video ? 'Video call cancelled' : 'Call cancelled')
+            : (video ? 'Missed video call' : 'Missed voice call');
+      }
+      return sentByMe
+          ? 'No answer'
+          : (video ? 'Missed video call' : 'Missed voice call');
+    }
+
+    if (meta.phase == 'ended') {
+      if (meta.callConnected && meta.durationSeconds != null && meta.durationSeconds! > 0) {
+        final s = meta.durationSeconds!;
+        return 'Duration ${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+      }
+      if (!meta.callConnected) {
+        return sentByMe
+            ? 'No answer'
+            : (video ? 'Missed video call' : 'Missed voice call');
+      }
+      if (meta.durationSeconds != null && meta.durationSeconds! > 0) {
+        final s = meta.durationSeconds!;
+        return 'Duration ${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+      }
+      return video ? 'Video call ended' : 'Voice call ended';
+    }
+
+    return body.isNotEmpty ? body : (video ? 'Video call' : 'Voice call');
+  }
+
+  final List<Map<String, dynamic>> attachments;
 
   String get reactionsFingerprint {
     if (reactions.isEmpty) return '';

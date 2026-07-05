@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../../config/api_config.dart';
+import 'api_throttle_guard.dart';
 
 class ApiException implements Exception {
   ApiException(this.message, {this.statusCode, this.twoFactorRequired = false});
@@ -29,8 +30,14 @@ class ApiClient {
   final int? businessUnitId;
   final int? teamId;
 
+  static const Duration _connectionTimeout = Duration(seconds: 12);
+  static const Duration _idleTimeout = Duration(seconds: 15);
+  static const Duration _responseTimeout = Duration(seconds: 20);
+
   static final HttpClient _client = (() {
     final client = HttpClient()
+      ..connectionTimeout = _connectionTimeout
+      ..idleTimeout = _idleTimeout
       ..badCertificateCallback = (cert, host, port) =>
           host == ApiConfig.serverIp || host == ApiConfig.nginxHost;
     return client;
@@ -55,7 +62,14 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> getJson(String path, {Map<String, String>? query}) {
+  Future<Map<String, dynamic>> getJson(
+    String path, {
+    Map<String, String>? query,
+    bool bypassThrottle = false,
+  }) {
+    if (!bypassThrottle && ApiThrottleGuard.instance.isBlocked) {
+      throw ApiException(ApiThrottleGuard.instance.userMessage, statusCode: 429);
+    }
     return _send(method: 'GET', path: path, query: query);
   }
 
@@ -105,8 +119,8 @@ class ApiClient {
     request.add(body.toBytes());
 
     try {
-      final response = await request.close();
-      final text = await response.transform(utf8.decoder).join();
+      final response = await request.close().timeout(_responseTimeout);
+      final text = await response.transform(utf8.decoder).join().timeout(_responseTimeout);
       return _decodeMap(response.statusCode, text, path: path);
     } catch (e) {
       throw ApiException(_friendlyError(e));
@@ -144,8 +158,8 @@ class ApiClient {
         request.add(utf8.encode(_encodeForm(formBody)));
       }
 
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
+      final response = await request.close().timeout(_responseTimeout);
+      final body = await response.transform(utf8.decoder).join().timeout(_responseTimeout);
       return _decodeMap(response.statusCode, body, path: path);
     } catch (e) {
       if (e is ApiException) rethrow;
@@ -209,10 +223,11 @@ class ApiClient {
       throw ApiException(serverMessage() ?? 'Please check your email and password.', statusCode: 422);
     }
     if (statusCode == 429) {
+      if (!isLogin) ApiThrottleGuard.instance.register429();
       throw ApiException(
         isLogin
             ? (serverMessage() ?? 'Please wait a moment and try again.')
-            : (serverMessage() ?? 'Too many requests. Please try again shortly.'),
+            : ApiThrottleGuard.instance.userMessage,
         statusCode: 429,
       );
     }
@@ -231,6 +246,7 @@ class ApiClient {
     }
     if (body.isEmpty) return {};
     final decoded = jsonDecode(body);
+    ApiThrottleGuard.instance.registerSuccess();
     if (decoded is Map<String, dynamic>) return decoded;
     return {'data': decoded};
   }
@@ -242,6 +258,7 @@ class ApiClient {
     }
     if (msg.contains('Connection refused') ||
         msg.contains('Connection timed out') ||
+        msg.contains('TimeoutException') ||
         msg.contains('SocketException') ||
         msg.contains('Failed host lookup')) {
       return 'Server unreachable. Check your internet connection.';
