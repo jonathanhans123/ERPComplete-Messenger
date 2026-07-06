@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../calls/call_screen_navigator.dart';
 import '../calls/incoming_call_actions.dart';
 import '../auth/auth_repository.dart';
 import '../calls/call_session_controller.dart';
 import '../calls/incoming_call_controller.dart';
 import '../messaging/messaging_repository.dart';
 import '../models/api_models.dart';
-import '../../features/calls/call_screen.dart';
 import 'messenger_notification_service.dart';
 
 /// Handles accept / decline from system incoming-call notifications.
@@ -87,6 +87,6 @@ class IncomingCallActionHandler {
       return;
     }
     call.expand();
-    await nav.push(MaterialPageRoute(builder: (_) => const CallScreen()));
+    await CallScreenNavigator.open();
   }
 }

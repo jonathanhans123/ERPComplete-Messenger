@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../messaging/messaging_repository.dart';
 import '../models/api_models.dart';
+import 'call_session_storage.dart';
 
 /// Keeps an active call alive while user navigates chat (minimized bar).
 class CallSessionController extends ChangeNotifier {
@@ -23,6 +24,8 @@ class CallSessionController extends ChangeNotifier {
   String? statusMessage;
   bool muted = false;
   bool cameraOff = false;
+  /// `false` = earpiece (normal/phone-to-ear), `true` = loudspeaker.
+  bool loudspeakerOn = false;
   LiveCallToken? token;
   String? room;
   String? sessionId;
@@ -36,16 +39,22 @@ class CallSessionController extends ChangeNotifier {
   bool _ringTimeoutTriggered = false;
   bool _ending = false;
   bool _autoEnding = false;
+  bool _recovering = false;
+  DateTime? _rejoinGraceUntil;
   int _connectEpoch = 0;
   Timer? _roomTeardownTimer;
   CameraPosition _cameraPosition = CameraPosition.front;
   EventsListener<RoomEvent>? _roomListener;
+  Future<void>? _recoveryFuture;
+  Timer? _trackNotifyDebounce;
 
   bool get isActive => active;
   bool get isEnding => _ending;
+  bool get isRecovering => _recovering;
   Room? get liveKitRoom => _room;
   CameraPosition get cameraPosition => _cameraPosition;
   bool get isOutgoing => _isOutgoing;
+  bool get canToggleSpeaker => Hardware.instance.canSwitchSpeakerphone;
 
   static String generateSessionId() => const Uuid().v4().substring(0, 8);
 
@@ -57,6 +66,8 @@ class CallSessionController extends ChangeNotifier {
     _connectEpoch++;
     _cancelRingTimeout();
     _cancelRoomTeardown();
+    _trackNotifyDebounce?.cancel();
+    _trackNotifyDebounce = null;
     _ending = false;
     _autoEnding = false;
     _detachRoomImmediate();
@@ -64,10 +75,205 @@ class CallSessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Called on app launch / resume — in-memory call cannot survive process death.
-  Future<void> recoverAfterLaunch() async {
-    if (!active && _room == null) return;
-    await forceReset();
+  /// Called on app launch — rejoin calls after process death; keep in-memory calls on resume.
+  Future<void> recoverAfterLaunch({
+    MessagingRepository? messagingRepo,
+    String callerName = 'User',
+    bool coldStart = false,
+  }) async {
+    if (_recoveryFuture != null) {
+      await _recoveryFuture;
+      return;
+    }
+    _recoveryFuture = _recoverAfterLaunchImpl(
+      messagingRepo: messagingRepo,
+      callerName: callerName,
+      coldStart: coldStart,
+    );
+    try {
+      await _recoveryFuture;
+    } finally {
+      _recoveryFuture = null;
+    }
+  }
+
+  Future<void> _recoverAfterLaunchImpl({
+    MessagingRepository? messagingRepo,
+    String callerName = 'User',
+    bool coldStart = false,
+  }) async {
+    if (active) {
+      if (needsRejoin) {
+        await rejoinCall();
+      } else if (_room != null && !connected && !connecting) {
+        await retryConnection();
+      }
+      return;
+    }
+
+    final snap = await CallSessionStorage.read();
+    if (snap == null || messagingRepo == null) return;
+    if (!coldStart) {
+      // Resume: only rehydrate when the process lost in-memory call state.
+      return;
+    }
+
+    _recovering = true;
+    _rejoinGraceUntil = DateTime.now().add(const Duration(seconds: 12));
+    notifyListeners();
+
+    try {
+      final messages = await messagingRepo.fetchMessages(
+        snap.conversationId,
+        page: 1,
+        perPage: 100,
+        bypassThrottle: true,
+      );
+      ChatMessage? callMsg;
+      for (final m in messages) {
+        if (m.id == snap.messageId) {
+          callMsg = m;
+          break;
+        }
+      }
+      if (callMsg == null) {
+        for (final m in messages) {
+          final meta = m.callMeta;
+          if (m.type == 'call' && meta != null && meta.callSessionId == snap.sessionId) {
+            callMsg = m;
+            break;
+          }
+        }
+      }
+
+      final meta = callMsg?.callMeta;
+      final phase = (meta?.phase ?? '').toLowerCase();
+      if (phase == 'declined' || phase == 'ended') {
+        await CallSessionStorage.clear();
+        return;
+      }
+
+      final canRejoin = snap.callWasAnswered ||
+          snap.isOutgoing ||
+          phase == 'live' ||
+          phase == 'ringing';
+      if (!canRejoin) {
+        await CallSessionStorage.clear();
+        return;
+      }
+
+      ConversationSummary conv;
+      try {
+        final detail = await messagingRepo.fetchConversation(snap.conversationId);
+        conv = detail.toSummary();
+      } catch (_) {
+        final list = await messagingRepo.fetchConversations(bypassThrottle: true);
+        conv = list.firstWhere((c) => c.id == snap.conversationId);
+      }
+
+      displayName = snap.displayName.isNotEmpty ? snap.displayName : callerName;
+      await _rejoinFromSnapshot(
+        snap: snap,
+        conv: conv,
+        messagingRepo: messagingRepo,
+        callMessage: callMsg,
+      );
+    } catch (_) {
+      await CallSessionStorage.clear();
+    } finally {
+      _recovering = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> persistIfActive() async {
+    if (!active) return;
+    if (!connected && !_callWasAnswered && !_remoteEverConnected) return;
+    await _persistActiveCall();
+  }
+
+  Future<void> _rejoinFromSnapshot({
+    required CallSessionSnapshot snap,
+    required ConversationSummary conv,
+    required MessagingRepository messagingRepo,
+    ChatMessage? callMessage,
+  }) async {
+    if (active || connecting) {
+      await forceReset();
+    }
+
+    final meta = callMessage?.callMeta;
+    final epoch = ++_connectEpoch;
+    conversation = conv;
+    repo = messagingRepo;
+    isVideo = snap.isVideo || (meta?.isVideo ?? false);
+    active = true;
+    minimized = conv.isGroup || snap.isGroupLike;
+    connecting = true;
+    connected = false;
+    error = null;
+    statusMessage = null;
+    muted = false;
+    cameraOff = false;
+    loudspeakerOn = isVideo;
+    token = null;
+    messageId = snap.messageId;
+    sessionId = snap.sessionId;
+    room = snap.room;
+    _isOutgoing = snap.isOutgoing;
+    _callWasAnswered = snap.callWasAnswered || !snap.isOutgoing;
+    _ending = false;
+    _autoEnding = false;
+    _remoteEverConnected = snap.callWasAnswered;
+    _activeSignalSent = (meta?.phase ?? '') == 'live';
+    _ringTimeoutTriggered = false;
+    _connectedAt = snap.callWasAnswered ? DateTime.now() : null;
+    _cancelRingTimeout();
+    _roomListener?.dispose();
+    _roomListener = null;
+    notifyListeners();
+    await _connect(outgoing: false, epoch: epoch);
+  }
+
+  Future<void> _persistActiveCall() async {
+    final conv = conversation;
+    final mid = messageId;
+    final sid = sessionId;
+    final callRoom = room;
+    if (conv == null || mid == null || sid == null || callRoom == null) return;
+    if (!connected && !_callWasAnswered && !_remoteEverConnected) return;
+    final remoteCount = _room?.remoteParticipants.length ?? 0;
+    final multiParty = conv.isGroup || remoteCount >= 2;
+    await CallSessionStorage.save(
+      CallSessionSnapshot(
+        conversationId: conv.id,
+        messageId: mid,
+        sessionId: sid,
+        room: callRoom,
+        displayName: displayName,
+        isVideo: isVideo,
+        isGroup: conv.isGroup || multiParty,
+        callWasAnswered: _callWasAnswered,
+        isOutgoing: _isOutgoing,
+        isMultiParty: multiParty,
+        remoteParticipantCount: remoteCount,
+      ),
+    );
+  }
+
+  Future<void> rejoinCall() async {
+    if (!active || connecting) return;
+    if (connected && _room != null) return;
+    final epoch = ++_connectEpoch;
+    await _connect(outgoing: false, epoch: epoch);
+  }
+
+  bool get needsRejoin => active && !connected && !connecting && room != null;
+
+  bool get isGroupLikeCall {
+    final conv = conversation;
+    final remoteCount = _room?.remoteParticipants.length ?? 0;
+    return (conv?.isGroup ?? false) || remoteCount >= 2;
   }
 
   Future<void> start({
@@ -93,6 +299,7 @@ class CallSessionController extends ChangeNotifier {
     statusMessage = null;
     muted = false;
     cameraOff = false;
+    loudspeakerOn = video;
     token = null;
     messageId = null;
     sessionId = generateSessionId();
@@ -138,6 +345,7 @@ class CallSessionController extends ChangeNotifier {
     statusMessage = null;
     muted = false;
     cameraOff = false;
+    loudspeakerOn = isVideo;
     token = null;
     messageId = callMessage.id;
     sessionId = meta.callSessionId;
@@ -178,12 +386,23 @@ class CallSessionController extends ChangeNotifier {
     _ringTimeoutTimer = null;
   }
 
+  Future<void> _retryAfterRoomDrop() async {
+    if (!active || _ending || connecting) return;
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    if (!active || _ending || connected) return;
+    await retryConnection();
+  }
+
   Future<void> retryConnection() {
     final epoch = ++_connectEpoch;
-    return _connect(outgoing: messageId == null, epoch: epoch);
+    return _connect(outgoing: _isOutgoing && messageId == null, epoch: epoch);
   }
 
   bool _shouldEndAsCompleted() {
+    return _remoteEverConnected || _activeSignalSent || _callWasAnswered;
+  }
+
+  bool _hadEstablishedCall() {
     return _remoteEverConnected || _activeSignalSent || _callWasAnswered;
   }
 
@@ -212,9 +431,18 @@ class CallSessionController extends ChangeNotifier {
   void _markRemoteJoined() {
     _remoteEverConnected = true;
     _connectedAt ??= DateTime.now();
+    _rejoinGraceUntil = null;
     _cancelRingTimeout();
     unawaited(_sendActiveIfNeeded());
+    unawaited(_persistActiveCall());
     notifyListeners();
+  }
+
+  void _notifyTrackChange() {
+    _trackNotifyDebounce?.cancel();
+    _trackNotifyDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (active && !_ending) notifyListeners();
+    });
   }
 
   void _attachRoomListeners(Room lkRoom) {
@@ -232,6 +460,9 @@ class CallSessionController extends ChangeNotifier {
         if (!_connectStillValid(_connectEpoch)) return;
         final localId = lkRoom.localParticipant?.identity;
         if (localId == null || event.participant.identity == localId) return;
+        if (_rejoinGraceUntil != null && DateTime.now().isBefore(_rejoinGraceUntil!)) {
+          return;
+        }
         if (!_autoEnding && lkRoom.remoteParticipants.isEmpty && _remoteEverConnected) {
           _autoEnding = true;
           statusMessage = 'Call ended';
@@ -240,21 +471,25 @@ class CallSessionController extends ChangeNotifier {
       })
       ..on<RoomDisconnectedEvent>((_) {
         if (_ending || !active) return;
+        if (_rejoinGraceUntil != null && DateTime.now().isBefore(_rejoinGraceUntil!)) {
+          unawaited(_retryAfterRoomDrop());
+          return;
+        }
         _autoEnding = true;
         statusMessage = 'Call ended';
         scheduleMicrotask(() => unawaited(end()));
       })
       ..on<TrackSubscribedEvent>((_) {
-        if (_connectStillValid(_connectEpoch)) notifyListeners();
+        if (_connectStillValid(_connectEpoch)) _notifyTrackChange();
       })
       ..on<TrackUnsubscribedEvent>((_) {
-        if (_connectStillValid(_connectEpoch)) notifyListeners();
+        if (_connectStillValid(_connectEpoch)) _notifyTrackChange();
       })
       ..on<LocalTrackPublishedEvent>((_) {
-        if (_connectStillValid(_connectEpoch)) notifyListeners();
+        if (_connectStillValid(_connectEpoch)) _notifyTrackChange();
       })
       ..on<LocalTrackUnpublishedEvent>((_) {
-        if (_connectStillValid(_connectEpoch)) notifyListeners();
+        if (_connectStillValid(_connectEpoch)) _notifyTrackChange();
       });
 
     if (lkRoom.remoteParticipants.isNotEmpty) {
@@ -307,11 +542,13 @@ class CallSessionController extends ChangeNotifier {
       _attachRoomListeners(lkRoom);
       token = t;
       connected = true;
+      await _applyAudioRoute();
       if (_callWasAnswered || lkRoom.remoteParticipants.isNotEmpty) {
         if (lkRoom.remoteParticipants.isNotEmpty) _markRemoteJoined();
         _cancelRingTimeout();
         await _sendActiveIfNeeded();
       }
+      await _persistActiveCall();
     } catch (e) {
       if (!_connectStillValid(epoch)) return;
       error = e.toString();
@@ -409,15 +646,18 @@ class CallSessionController extends ChangeNotifier {
     _ringTimeoutTriggered = false;
     _connectedAt = null;
     error = null;
+    loudspeakerOn = false;
 
     if (lkRoom != null) {
       _scheduleRoomTeardown(lkRoom);
     }
+    unawaited(CallSessionStorage.clear());
   }
 
   void minimize() {
     if (!active) return;
     minimized = true;
+    unawaited(_persistActiveCall());
     notifyListeners();
   }
 
@@ -442,8 +682,29 @@ class CallSessionController extends ChangeNotifier {
     if (isVideo) return;
     isVideo = true;
     cameraOff = false;
+    loudspeakerOn = true;
     await _room?.localParticipant?.setCameraEnabled(true);
+    await _applyAudioRoute();
     notifyListeners();
+  }
+
+  Future<void> toggleLoudspeaker() async {
+    await setLoudspeaker(!loudspeakerOn);
+  }
+
+  Future<void> setLoudspeaker(bool on) async {
+    if (!canToggleSpeaker || loudspeakerOn == on) return;
+    loudspeakerOn = on;
+    await _applyAudioRoute();
+    notifyListeners();
+  }
+
+  Future<void> _applyAudioRoute() async {
+    final lkRoom = _room;
+    if (lkRoom == null || !canToggleSpeaker) return;
+    try {
+      await lkRoom.setSpeakerOn(loudspeakerOn);
+    } catch (_) {}
   }
 
   Future<void> flipCamera() async {
@@ -531,6 +792,7 @@ class CallSessionController extends ChangeNotifier {
       isOutgoing: _isOutgoing,
       ringTimeoutTriggered: _ringTimeoutTriggered,
       shouldComplete: _shouldEndAsCompleted(),
+      hadEstablishedCall: _hadEstablishedCall(),
       duration: _connectedAt != null && _shouldEndAsCompleted()
           ? DateTime.now().difference(_connectedAt!).inSeconds
           : 0,
@@ -574,14 +836,36 @@ class CallSessionController extends ChangeNotifier {
             callOutcome: 'completed',
           );
         } else if (snapshot.isOutgoing) {
-          final outcome = snapshot.ringTimeoutTriggered ? 'missed' : 'cancelled';
+          if (snapshot.hadEstablishedCall) {
+            await r.sendCallSignal(
+              conversationId: conv.id,
+              action: 'ended',
+              callSessionId: sid,
+              roomName: callRoom,
+              messageId: mid,
+              durationSeconds: snapshot.duration > 0 ? snapshot.duration : 1,
+              callOutcome: 'completed',
+            );
+          } else {
+            final outcome = snapshot.ringTimeoutTriggered ? 'missed' : 'cancelled';
+            await r.sendCallSignal(
+              conversationId: conv.id,
+              action: 'declined',
+              callSessionId: sid,
+              roomName: callRoom,
+              messageId: mid,
+              callOutcome: outcome,
+            );
+          }
+        } else if (snapshot.hadEstablishedCall) {
           await r.sendCallSignal(
             conversationId: conv.id,
-            action: 'declined',
+            action: 'ended',
             callSessionId: sid,
             roomName: callRoom,
             messageId: mid,
-            callOutcome: outcome,
+            durationSeconds: snapshot.duration > 0 ? snapshot.duration : 1,
+            callOutcome: 'completed',
           );
         } else {
           await r.sendCallSignal(
@@ -626,6 +910,7 @@ class _EndSnapshot {
     required this.isOutgoing,
     required this.ringTimeoutTriggered,
     required this.shouldComplete,
+    required this.hadEstablishedCall,
     required this.duration,
     required this.needsActive,
   });
@@ -638,6 +923,7 @@ class _EndSnapshot {
   final bool isOutgoing;
   final bool ringTimeoutTriggered;
   final bool shouldComplete;
+  final bool hadEstablishedCall;
   final int duration;
   final bool needsActive;
 }

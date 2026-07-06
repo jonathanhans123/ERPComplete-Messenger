@@ -8,7 +8,11 @@ import '../api/api_client.dart';
 import '../models/api_models.dart';
 
 class AuthRepository extends ChangeNotifier {
-  AuthRepository({FlutterSecureStorage? storage}) : _storage = storage ?? const FlutterSecureStorage();
+  AuthRepository({FlutterSecureStorage? storage})
+      : _storage = storage ??
+            const FlutterSecureStorage(
+              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+            );
 
   static const _tokenKey = 'access_token';
   static const _userIdKey = 'user_id';
@@ -17,7 +21,7 @@ class AuthRepository extends ChangeNotifier {
   static const _buKey = 'business_unit_id';
   static const _teamKey = 'team_id';
   static const _bootstrapRefreshTimeout = Duration(seconds: 10);
-  static const _storageReadTimeout = Duration(seconds: 8);
+  static const _storageReadTimeout = Duration(seconds: 15);
 
   final FlutterSecureStorage _storage;
 
@@ -44,7 +48,7 @@ class AuthRepository extends ChangeNotifier {
     try {
       await _loadStoredCredentials();
       if (isAuthenticated) {
-        await refreshSession(logoutOnFailure: true).timeout(
+        await refreshSession(logoutOnFailure: false).timeout(
           _bootstrapRefreshTimeout,
           onTimeout: () => false,
         );
@@ -67,11 +71,23 @@ class AuthRepository extends ChangeNotifier {
   }
 
   Future<String?> _readStorage(String key) async {
-    try {
-      return await _storage.read(key: key).timeout(_storageReadTimeout, onTimeout: () => null);
-    } catch (_) {
-      return null;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        final value = await _storage.read(key: key).timeout(
+          _storageReadTimeout,
+          onTimeout: () => null,
+        );
+        if (value != null && value.isNotEmpty) return value;
+        if (attempt < 2) {
+          await Future<void>.delayed(Duration(milliseconds: 200 * (attempt + 1)));
+        }
+      } catch (_) {
+        if (attempt < 2) {
+          await Future<void>.delayed(Duration(milliseconds: 200 * (attempt + 1)));
+        }
+      }
     }
+    return null;
   }
 
   ApiClient client() => apiClientForBaseUrl(

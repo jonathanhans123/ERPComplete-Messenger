@@ -29,17 +29,18 @@ class _SafeVideoTrackState extends State<SafeVideoTrack> {
 
   @override
   Widget build(BuildContext context) {
-    if (_dead) {
-      return const ColoredBox(color: Colors.black);
-    }
     final t = widget.track;
-    if (t == null || t.muted) {
+    if (_dead || t == null || t.muted) {
       return const ColoredBox(color: Colors.black);
     }
-    return VideoTrackRenderer(
-      t,
-      fit: widget.fit,
-      mirrorMode: widget.mirrorMode,
-    );
+    try {
+      return VideoTrackRenderer(
+        t,
+        fit: widget.fit,
+        mirrorMode: widget.mirrorMode,
+      );
+    } catch (_) {
+      return const ColoredBox(color: Colors.black);
+    }
   }
 }

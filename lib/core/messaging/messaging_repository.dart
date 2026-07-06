@@ -189,11 +189,12 @@ class MessagingRepository {
   Future<List<ChatMessage>> fetchMessages(
     int conversationId, {
     int page = 1,
+    int perPage = 50,
     bool bypassThrottle = false,
   }) async {
     final json = await _client().getJson(
       'messaging/conversations/$conversationId/messages',
-      query: {'page': '$page'},
+      query: {'page': '$page', 'per_page': '$perPage'},
       bypassThrottle: bypassThrottle,
     );
     final data = json['data'] ?? json;

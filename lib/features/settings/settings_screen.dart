@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/platform/android_background_reliability.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/preferences/messenger_preferences.dart';
 import '../../core/theme/theme_controller.dart';
@@ -58,6 +59,8 @@ class SettingsScreen extends StatelessWidget {
             value: prefs.pushNotificationsEnabled,
             onChanged: (v) => prefs.setPushNotificationsEnabled(v),
           ),
+          if (AndroidBackgroundReliability.isAndroid)
+            _AndroidBackgroundReliabilityTile(),
           ListTile(
             leading: const Icon(Icons.notifications_off_outlined),
             title: const Text('Muted chats'),
@@ -220,6 +223,72 @@ class WallpaperPickerScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AndroidBackgroundReliabilityTile extends StatefulWidget {
+  @override
+  State<_AndroidBackgroundReliabilityTile> createState() => _AndroidBackgroundReliabilityTileState();
+}
+
+class _AndroidBackgroundReliabilityTileState extends State<_AndroidBackgroundReliabilityTile> {
+  bool? _unrestricted;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final ok = await AndroidBackgroundReliability.isBatteryOptimizationDisabled();
+    if (mounted) setState(() => _unrestricted = ok);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ext = messengerExt(context);
+    final ok = _unrestricted;
+    return ListTile(
+      leading: Icon(ok == true ? Icons.battery_charging_full : Icons.battery_alert_outlined),
+      title: const Text('Background & battery'),
+      subtitle: Text(
+        ok == null
+            ? 'Checking…'
+            : ok
+                ? 'Unrestricted — calls and alerts can run in background'
+                : 'Restricted — set Battery saver to No restrictions in App info',
+        style: TextStyle(color: ext.subtext, fontSize: 13),
+      ),
+      trailing: ok == true ? const Icon(Icons.check_circle, color: MessengerPalette.whatsAppGreen) : const Icon(Icons.chevron_right),
+      onTap: () async {
+        if (ok != true) {
+          final granted = await AndroidBackgroundReliability.requestBatteryOptimizationExemption();
+          if (!granted && context.mounted) {
+            await showDialog<void>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('Set battery to No restrictions'),
+                content: Text(AndroidBackgroundReliability.manualStepsText),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+                  FilledButton(
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      await AndroidBackgroundReliability.openApplicationSettings();
+                    },
+                    child: const Text('Open App info'),
+                  ),
+                ],
+              ),
+            );
+          }
+        } else {
+          await AndroidBackgroundReliability.openApplicationSettings();
+        }
+        await _refresh();
+      },
     );
   }
 }

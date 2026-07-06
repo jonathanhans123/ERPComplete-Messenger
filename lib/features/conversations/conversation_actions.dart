@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -11,7 +13,7 @@ import '../../core/notifications/messenger_notification_service.dart';
 import '../../core/preferences/messenger_preferences.dart';
 import '../../theme/messenger_theme.dart';
 import '../../widgets/messenger_avatar.dart';
-import '../calls/call_screen.dart';
+import '../../core/calls/call_screen_navigator.dart';
 import '../settings/settings_screen.dart';
 import 'conversation_info_screen.dart';
 import 'create_group_screen.dart';
@@ -80,14 +82,15 @@ class ConversationActions {
       await call.end();
       await MessengerNotificationService.instance.clearAllCallNotifications();
     }
+    unawaited(CallScreenNavigator.open(context));
     await call.start(
       conv: c,
       messagingRepo: repo,
       callerName: auth.userName ?? 'User',
       video: video,
     );
-    if (context.mounted && call.isActive) {
-      await Navigator.push(context, MaterialPageRoute(builder: (_) => const CallScreen()));
+    if (!call.active) {
+      CallScreenNavigator.popIfOpen();
     }
   }
 

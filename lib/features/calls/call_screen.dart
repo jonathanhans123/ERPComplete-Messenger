@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/calls/call_screen_navigator.dart';
 import '../../core/calls/call_session_controller.dart';
 import '../../core/notifications/messenger_notification_service.dart';
 import '../../core/models/api_models.dart';
@@ -23,7 +24,6 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
   String? _shownStatusMessage;
   late CallSessionController _call;
   bool _popping = false;
-  bool _localEnding = false;
 
   @override
   void initState() {
@@ -52,7 +52,14 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
     _popping = true;
     unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) Navigator.of(context).maybePop();
+      if (!mounted) return;
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) {
+        navigator.pop();
+      } else {
+        CallScreenNavigator.popIfOpen();
+      }
+      _popping = false;
     });
   }
 
@@ -73,9 +80,7 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
   }
 
   void _endCall(CallSessionController call) {
-    if (_localEnding || _popping) return;
-    _localEnding = true;
-    setState(() {});
+    if (_popping) return;
     HapticFeedback.mediumImpact();
     unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
     unawaited(call.end());
@@ -154,10 +159,13 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final call = context.watch<CallSessionController>();
 
-    if (_localEnding || !call.active) {
+    if (!call.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_popping) _popCallScreen();
+      });
       return const Scaffold(
         backgroundColor: Color(0xFF0B141A),
-        body: Center(child: CircularProgressIndicator(color: Colors.white)),
+        body: SizedBox.shrink(),
       );
     }
 
@@ -242,12 +250,14 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
                 ),
               ),
             if (call.connecting)
-              const Positioned.fill(
-                child: IgnorePointer(
-                  child: ColoredBox(
-                    color: Color(0x88000000),
-                    child: Center(child: CircularProgressIndicator(color: Colors.white)),
-                  ),
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: LinearProgressIndicator(
+                  minHeight: 3,
+                  backgroundColor: Colors.transparent,
+                  color: MessengerPalette.whatsAppGreen,
                 ),
               ),
             if (call.error != null)
@@ -298,6 +308,12 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
                           icon: call.cameraOff ? Icons.videocam_off : Icons.videocam,
                           label: call.cameraOff ? 'Camera on' : 'Camera off',
                           onTap: call.toggleCamera,
+                        ),
+                      if (call.canToggleSpeaker && (Platform.isAndroid || Platform.isIOS))
+                        _Control(
+                          icon: call.loudspeakerOn ? Icons.volume_up_rounded : Icons.phone_in_talk_rounded,
+                          label: call.loudspeakerOn ? 'Speaker' : 'Earpiece',
+                          onTap: call.toggleLoudspeaker,
                         ),
                       _Control(
                         icon: Icons.call_end,

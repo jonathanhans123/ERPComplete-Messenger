@@ -35,15 +35,18 @@ class IncomingCallWatcher {
     if (!auth.isAuthenticated) return;
 
     final callSession = context.read<CallSessionController>();
-    if (callSession.isActive) {
-      if (!callSession.connecting && !callSession.connected && callSession.liveKitRoom == null) {
-        await callSession.forceReset();
-      } else {
+    if (callSession.isActive || callSession.isRecovering) {
+      if (callSession.isRecovering ||
+          callSession.connecting ||
+          callSession.needsRejoin ||
+          callSession.connected ||
+          callSession.liveKitRoom != null) {
         context.read<IncomingCallController>().clear(handled: false);
         await IncomingCallRingtone.stop();
         await MessengerNotificationService.instance.clearIncomingCallNotification();
         return;
       }
+      await callSession.forceReset();
     }
 
     final incoming = context.read<IncomingCallController>();

@@ -4,17 +4,19 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/auth/auth_repository.dart';
+import '../core/messaging/messaging_repository.dart';
 import '../core/notifications/messenger_notification_service.dart';
+import '../core/calls/call_screen_navigator.dart';
 import '../core/calls/call_session_controller.dart';
 import '../core/calls/incoming_call_watcher.dart';
 import '../core/models/api_models.dart';
 import '../core/notifications/messenger_background_watcher.dart';
+import '../widgets/background_reliability_prompt.dart';
 import '../widgets/incoming_call_banner.dart';
 import '../widgets/incoming_call_overlay.dart';
 import '../features/login/login_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/conversations/conversations_screen.dart';
-import '../features/calls/call_screen.dart';
 import '../widgets/minimized_call_bar.dart';
 
 class MessengerHome extends StatefulWidget {
@@ -40,7 +42,26 @@ class _MessengerHomeState extends State<MessengerHome> {
     if (_recovered || !mounted) return;
     _recovered = true;
     await MessengerNotificationService.instance.clearAllCallNotifications();
-    await context.read<CallSessionController>().recoverAfterLaunch();
+    final auth = context.read<AuthRepository>();
+    await auth.refreshSession(logoutOnFailure: false);
+    if (!mounted || !auth.isAuthenticated) return;
+    final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
+    final name = auth.userName ?? 'User';
+    await context.read<CallSessionController>().recoverAfterLaunch(
+          messagingRepo: repo,
+          callerName: name,
+          coldStart: true,
+        );
+    final call = context.read<CallSessionController>();
+    if (!mounted || !call.active || call.conversation == null) return;
+    if (call.connected || call.connecting || call.needsRejoin) {
+      await CallScreenNavigator.open(context);
+    }
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) BackgroundReliabilityPrompt.maybeShow(context);
+      });
+    }
   }
 
   void _openChat(ConversationSummary conversation) {
@@ -54,7 +75,7 @@ class _MessengerHomeState extends State<MessengerHome> {
   void _expandCall() {
     final call = context.read<CallSessionController>();
     call.expand();
-    Navigator.push(context, MaterialPageRoute(builder: (_) => const CallScreen()));
+    unawaited(CallScreenNavigator.open(context));
   }
 
   @override
@@ -175,11 +196,34 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && mounted) {
-      context.read<AuthRepository>().refreshSession(logoutOnFailure: true);
-      unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
-      unawaited(context.read<CallSessionController>().recoverAfterLaunch());
+    if (!mounted) return;
+    final call = context.read<CallSessionController>();
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      unawaited(call.persistIfActive());
     }
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_onAppResumed());
+    }
+  }
+
+  Future<void> _onAppResumed() async {
+    if (!mounted) return;
+    final auth = context.read<AuthRepository>();
+    await auth.refreshSession(logoutOnFailure: false);
+    if (!mounted || !auth.isAuthenticated) return;
+    unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
+    final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
+    await context.read<CallSessionController>().recoverAfterLaunch(
+          messagingRepo: repo,
+          callerName: auth.userName ?? 'User',
+          coldStart: false,
+        );
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) BackgroundReliabilityPrompt.maybeShow(context);
+    });
   }
 
   @override
