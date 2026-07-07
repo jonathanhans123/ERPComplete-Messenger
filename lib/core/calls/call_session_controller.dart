@@ -113,10 +113,6 @@ class CallSessionController extends ChangeNotifier {
 
     final snap = await CallSessionStorage.read();
     if (snap == null || messagingRepo == null) return;
-    if (!coldStart) {
-      // Resume: only rehydrate when the process lost in-memory call state.
-      return;
-    }
 
     _recovering = true;
     _rejoinGraceUntil = DateTime.now().add(const Duration(seconds: 12));
@@ -266,6 +262,60 @@ class CallSessionController extends ChangeNotifier {
     if (connected && _room != null) return;
     final epoch = ++_connectEpoch;
     await _connect(outgoing: false, epoch: epoch);
+  }
+
+  /// Join or rejoin a call from a live/ringing call message in chat.
+  Future<void> joinExistingCall({
+    required ConversationSummary conv,
+    required MessagingRepository messagingRepo,
+    required String callerName,
+    required ChatMessage callMessage,
+  }) async {
+    final meta = callMessage.callMeta;
+    if (meta == null || meta.roomName.isEmpty || meta.callSessionId.isEmpty) {
+      error = 'Invalid call invite';
+      notifyListeners();
+      return;
+    }
+
+    if (active &&
+        sessionId == meta.callSessionId &&
+        room == meta.roomName &&
+        conversation?.id == conv.id) {
+      if (connected && _room != null) {
+        return;
+      }
+      if (needsRejoin || (!connected && !connecting)) {
+        await rejoinCall();
+      }
+      return;
+    }
+
+    final phase = meta.phase.toLowerCase();
+    if (phase == 'declined' || phase == 'ended') {
+      error = 'This call has already ended';
+      notifyListeners();
+      return;
+    }
+
+    final snap = CallSessionSnapshot(
+      conversationId: conv.id,
+      messageId: callMessage.id,
+      sessionId: meta.callSessionId,
+      room: meta.roomName,
+      displayName: callerName,
+      isVideo: meta.isVideo,
+      isGroup: conv.isGroup,
+      callWasAnswered: phase == 'live' || meta.callConnected || !callMessage.isSent,
+      isOutgoing: callMessage.isSent,
+    );
+
+    await _rejoinFromSnapshot(
+      snap: snap,
+      conv: conv,
+      messagingRepo: messagingRepo,
+      callMessage: callMessage,
+    );
   }
 
   bool get needsRejoin => active && !connected && !connecting && room != null;

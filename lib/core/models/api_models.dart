@@ -288,6 +288,18 @@ class CallMessageMeta {
   bool get isVideo => callKind == 'video';
 }
 
+extension ChatMessageCallX on ChatMessage {
+  /// True when the server still considers this call joinable (live or ringing).
+  bool get isRejoinableCall {
+    if (type != 'call') return false;
+    final meta = callMeta;
+    if (meta == null || meta.roomName.isEmpty || meta.callSessionId.isEmpty) return false;
+    final phase = meta.phase.toLowerCase();
+    if (phase == 'declined' || phase == 'ended') return false;
+    return phase == 'live' || phase == 'ringing';
+  }
+}
+
 class ChatMessage {
   ChatMessage({
     required this.id,

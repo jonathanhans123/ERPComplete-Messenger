@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/api_throttle_guard.dart';
 import '../../core/auth/auth_repository.dart';
+import '../../core/calls/call_session_controller.dart';
 import '../../core/cache/messenger_local_cache.dart';
 import '../../core/media/attachment_kind.dart';
 import '../../core/messaging/messaging_repository.dart';
@@ -448,6 +449,63 @@ class _ChatScreenState extends State<ChatScreen> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => ConversationInfoScreen(conversation: widget.conversation)));
   }
 
+  void _rejoinCall(ChatMessage callMessage) {
+    unawaited(ConversationActions.rejoinCallFromChat(context, widget.conversation, callMessage));
+  }
+
+  Widget _buildLiveCallBanner() {
+    final live = ConversationActions.latestRejoinableCall(_messages);
+    if (live == null) return const SizedBox.shrink();
+
+    final call = context.watch<CallSessionController>();
+    final liveSid = live.callMeta?.callSessionId;
+    if (ConversationActions.isAlreadyInCall(
+      call: call,
+      conversationId: widget.conversation.id,
+      callSessionId: liveSid,
+    )) {
+      return const SizedBox.shrink();
+    }
+
+    final needsReturn = call.active &&
+        call.sessionId == liveSid &&
+        call.conversation?.id == widget.conversation.id &&
+        call.minimized;
+
+    final video = live.callMeta?.isVideo ?? false;
+    return Material(
+      color: const Color(0xFF1F2C34),
+      elevation: 2,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              Icon(video ? Icons.videocam : Icons.call, color: MessengerPalette.whatsAppGreen, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  video ? 'Video call in progress' : 'Voice call in progress',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                ),
+              ),
+              FilledButton(
+                onPressed: () => _rejoinCall(live),
+                style: FilledButton.styleFrom(
+                  backgroundColor: MessengerPalette.whatsAppGreen,
+                  foregroundColor: Colors.white,
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: Text(needsReturn ? 'Return to call' : 'Rejoin'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   static String _formatTime(DateTime dt) {
     final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
     final m = dt.minute.toString().padLeft(2, '0');
@@ -537,6 +595,7 @@ class _ChatScreenState extends State<ChatScreen> {
         fallbackColor: bgColor,
         child: Column(
         children: [
+          _buildLiveCallBanner(),
           Expanded(
             child: DecoratedBox(
               decoration: BoxDecoration(color: prefs.customWallpaperPath != null ? Colors.transparent : bgColor),
@@ -580,11 +639,19 @@ class _ChatScreenState extends State<ChatScreen> {
                               }
                               final msg = (entry as ChatMessageEntry).message;
                               final uid = context.read<AuthRepository>().userId;
+                              final callCtrl = context.read<CallSessionController>();
+                              final canRejoin = msg.isRejoinableCall &&
+                                  !ConversationActions.isAlreadyInCall(
+                                    call: callCtrl,
+                                    conversationId: widget.conversation.id,
+                                    callSessionId: msg.callMeta?.callSessionId,
+                                  );
                               return MessageBubble(
                                 message: msg,
                                 showSender: isGroup,
                                 currentUserId: uid,
                                 onMediaOpen: _openMediaViewer,
+                                onCallRejoin: canRejoin ? _rejoinCall : null,
                                 onPollVote: msg.pollAttachment != null ? (opt) => _votePoll(msg, opt) : null,
                                 onLongPress: () => showMessageActions(
                                   context,

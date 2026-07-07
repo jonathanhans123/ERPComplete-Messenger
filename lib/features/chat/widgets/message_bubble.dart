@@ -38,6 +38,7 @@ class MessageBubble extends StatelessWidget {
     this.onLongPress,
     this.onPollVote,
     this.onMediaOpen,
+    this.onCallRejoin,
     this.currentUserId,
   });
 
@@ -46,6 +47,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onLongPress;
   final void Function(String optionId)? onPollVote;
   final void Function(ChatMessage message, AttachmentInfo info)? onMediaOpen;
+  final void Function(ChatMessage message)? onCallRejoin;
   final int? currentUserId;
 
   @override
@@ -135,6 +137,7 @@ class MessageBubble extends StatelessWidget {
                       textColor: textColor,
                       onPollVote: onPollVote,
                       onMediaOpen: onMediaOpen,
+                      onCallRejoin: onCallRejoin,
                       currentUserId: currentUserId,
                     ),
                     const SizedBox(height: 4),
@@ -205,6 +208,7 @@ class _MessageBody extends StatelessWidget {
     required this.textColor,
     this.onPollVote,
     this.onMediaOpen,
+    this.onCallRejoin,
     this.currentUserId,
   });
 
@@ -212,6 +216,7 @@ class _MessageBody extends StatelessWidget {
   final Color textColor;
   final void Function(String optionId)? onPollVote;
   final void Function(ChatMessage message, AttachmentInfo info)? onMediaOpen;
+  final void Function(ChatMessage message)? onCallRejoin;
   final int? currentUserId;
 
   @override
@@ -219,17 +224,41 @@ class _MessageBody extends StatelessWidget {
     if (message.type == 'call') {
       final meta = message.callMeta;
       final video = meta?.isVideo == true || message.body.toLowerCase().contains('video');
-      return Row(
+      final canRejoin = message.isRejoinableCall && onCallRejoin != null;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(video ? Icons.videocam : Icons.call, size: 18, color: textColor.withValues(alpha: 0.85)),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(
-              message.callDisplayLine,
-              style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35),
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(video ? Icons.videocam : Icons.call, size: 18, color: textColor.withValues(alpha: 0.85)),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  message.callDisplayLine,
+                  style: TextStyle(color: textColor, fontSize: 15.5, height: 1.35),
+                ),
+              ),
+            ],
           ),
+          if (canRejoin) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => onCallRejoin!(message),
+                icon: Icon(video ? Icons.videocam : Icons.call, size: 18),
+                label: Text(video ? 'Rejoin video call' : 'Rejoin call'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: MessengerPalette.whatsAppGreen,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+          ],
         ],
       );
     }

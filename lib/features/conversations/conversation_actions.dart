@@ -94,6 +94,73 @@ class ConversationActions {
     }
   }
 
+  /// Rejoin a live call from the chat call message or banner.
+  static Future<void> rejoinCallFromChat(
+    BuildContext context,
+    ConversationSummary conversation,
+    ChatMessage callMessage,
+  ) async {
+    final auth = context.read<AuthRepository>();
+    final call = context.read<CallSessionController>();
+    final repo = repoOf(context);
+    final meta = callMessage.callMeta;
+
+    if (!callMessage.isRejoinableCall) {
+      _snack(context, 'This call is no longer active');
+      return;
+    }
+
+    if (isAlreadyInCall(
+      call: call,
+      conversationId: conversation.id,
+      callSessionId: meta?.callSessionId,
+    )) {
+      if (!CallScreenNavigator.isOpen) {
+        unawaited(CallScreenNavigator.open(context));
+      }
+      return;
+    }
+
+    if (!CallScreenNavigator.isOpen) {
+      unawaited(CallScreenNavigator.open(context));
+    }
+
+    try {
+      await call.joinExistingCall(
+        conv: conversation,
+        messagingRepo: repo,
+        callerName: auth.userName ?? 'User',
+        callMessage: callMessage,
+      );
+      if (!call.active) {
+        CallScreenNavigator.popIfOpen();
+        if (context.mounted) _snack(context, call.error ?? 'Could not rejoin call');
+      }
+    } catch (e) {
+      CallScreenNavigator.popIfOpen();
+      if (context.mounted) _snack(context, formatApiError(e));
+    }
+  }
+
+  static bool isAlreadyInCall({
+    required CallSessionController call,
+    required int conversationId,
+    String? callSessionId,
+  }) {
+    if (!call.active || !call.connected || callSessionId == null || callSessionId.isEmpty) {
+      return false;
+    }
+    return call.conversation?.id == conversationId && call.sessionId == callSessionId;
+  }
+
+  static ChatMessage? latestRejoinableCall(Iterable<ChatMessage> messages) {
+    final list = messages is List<ChatMessage> ? messages : messages.toList();
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i].isRejoinableCall) return list[i];
+    }
+    return null;
+  }
+
   static void _snack(BuildContext context, String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
