@@ -56,7 +56,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     _initRepo();
     _load();
     _search.addListener(_onSearchChanged);
-    _refreshTimer = Timer.periodic(const Duration(seconds: 60), (_) => _load(silent: true));
+    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) => _load(silent: true));
   }
 
   void _initRepo() {

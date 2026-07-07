@@ -39,7 +39,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late MessagingRepository _repo;
   final _input = TextEditingController();
   final _scroll = ScrollController();
@@ -60,13 +60,36 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _voiceRecordPath;
   bool _showingCachedData = false;
 
+  static const _pollInterval = Duration(seconds: 3);
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initRepo();
     _load();
-    _pollTimer = Timer.periodic(const Duration(seconds: 25), (_) => _pollMessages());
+    _startPolling();
     _input.addListener(_onInputChanged);
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _pollMessages());
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPolling();
+      unawaited(_pollMessages());
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _stopPolling();
+    }
   }
 
   void _onInputChanged() {
@@ -91,7 +114,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _stopPolling();
     _typingTimer?.cancel();
     _recordingTimer?.cancel();
     _recorderController.dispose();
