@@ -24,6 +24,7 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
   String? _shownStatusMessage;
   late CallSessionController _call;
   bool _popping = false;
+  bool _minimizing = false;
 
   @override
   void initState() {
@@ -53,12 +54,7 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
     unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final navigator = Navigator.of(context);
-      if (navigator.canPop()) {
-        navigator.pop();
-      } else {
-        CallScreenNavigator.popIfOpen();
-      }
+      CallScreenNavigator.popIfOpen();
       _popping = false;
     });
   }
@@ -88,9 +84,20 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
   }
 
   void _minimize(CallSessionController call) {
+    if (_popping || _minimizing || !call.active) return;
+    _minimizing = true;
     call.minimize();
-    _syncCallNotification();
-    Navigator.of(context).maybePop();
+    unawaited(
+      MessengerNotificationService.instance.showOngoingCallNotification(
+        title: call.conversation?.title ?? 'Call',
+        isVideo: call.isVideo,
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      CallScreenNavigator.popIfOpen();
+      _minimizing = false;
+    });
   }
 
   void _maybeShowStatus(CallSessionController call) {
@@ -214,7 +221,7 @@ class _CallScreenState extends State<CallScreen> with WidgetsBindingObserver {
               ),
             IconButton(
               tooltip: 'Minimize',
-              icon: const Icon(Icons.picture_in_picture_alt_outlined),
+              icon: const Icon(Icons.minimize_rounded),
               onPressed: () => _minimize(call),
             ),
           ],
