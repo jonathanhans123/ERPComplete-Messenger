@@ -11,7 +11,7 @@ Cross-platform **Flutter** app for ERPComplete messaging (chat + LiveKit video).
 
 ## Default API
 
-`https://srv1804550.hstgr.cloud/api/v1`
+`https://187.77.125.241/api/v1`
 
 ## First-time setup
 

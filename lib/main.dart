@@ -6,6 +6,7 @@ import 'app/app_shell.dart';
 import 'core/auth/auth_repository.dart';
 import 'core/calls/call_session_controller.dart';
 import 'core/calls/incoming_call_controller.dart';
+import 'core/messaging/messaging_broadcast_service.dart';
 import 'core/notifications/incoming_call_action_handler.dart';
 import 'core/notifications/messenger_notification_service.dart';
 import 'core/preferences/messenger_preferences.dart';
@@ -52,6 +53,7 @@ class ErpMessengerApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthRepository()..bootstrap()),
+        ChangeNotifierProvider(create: (_) => MessagingBroadcastService()),
         ChangeNotifierProvider(create: (_) => CallSessionController()),
         ChangeNotifierProvider(create: (_) => IncomingCallController()),
         ChangeNotifierProvider.value(value: themeController),

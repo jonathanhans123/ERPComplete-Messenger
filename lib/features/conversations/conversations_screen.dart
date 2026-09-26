@@ -7,6 +7,7 @@ import '../../core/api/api_client.dart';
 import '../../core/api/api_throttle_guard.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/cache/messenger_local_cache.dart';
+import '../../core/messaging/messaging_broadcast_service.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
 import '../../core/preferences/messenger_preferences.dart';
@@ -39,7 +40,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   String? _rateLimitNote;
   final _search = TextEditingController();
   int _totalUnread = 0;
-  Timer? _refreshTimer;
+  StreamSubscription<MessagingBroadcastEvent>? _broadcastSub;
+  MessagingBroadcastService? _broadcastService;
+  VoidCallback? _broadcastStateListener;
 
   static const _filters = [
     (ConversationFilter.all, 'All'),
@@ -56,7 +59,78 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     _initRepo();
     _load();
     _search.addListener(_onSearchChanged);
-    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) => _load(silent: true));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _subscribeBroadcast());
+  }
+
+  void _subscribeBroadcast() {
+    final auth = context.read<AuthRepository>();
+    final broadcast = context.read<MessagingBroadcastService>();
+    _broadcastService = broadcast;
+    _broadcastSub?.cancel();
+    _broadcastSub = broadcast.events.listen(_onBroadcastEvent);
+    if (_broadcastStateListener != null) {
+      broadcast.removeListener(_broadcastStateListener!);
+    }
+    _broadcastStateListener = () {
+      if (!mounted) return;
+      if (broadcast.isConnected && _items.isNotEmpty) {
+        broadcast.syncConversations(_items);
+      }
+    };
+    broadcast.addListener(_broadcastStateListener!);
+    if (!broadcast.isConnected) {
+      unawaited(broadcast.connect(auth));
+    }
+  }
+
+  void _onBroadcastEvent(MessagingBroadcastEvent event) {
+    if (!mounted) return;
+    if (event.eventName != 'message.sent' && event.eventName != 'message.updated') return;
+
+    final convId = event.conversationId;
+    final data = event.data;
+    final preview = data['body'] as String? ?? '';
+    final msgType = data['type'] as String? ?? 'text';
+    final time = data['time'] as String?;
+    final sender = data['sender'];
+    final senderId = sender is Map ? sender['id'] as int? : null;
+    final auth = context.read<AuthRepository>();
+    final isOwn = senderId != null && senderId == auth.userId;
+    final isSelected = widget.selectedId == convId;
+
+    final index = _items.indexWhere((c) => c.id == convId);
+    if (index < 0) {
+      unawaited(_load(silent: true));
+      return;
+    }
+
+    final conv = _items[index];
+    final unreadDelta = (event.eventName == 'message.sent' && !isOwn && !isSelected) ? 1 : 0;
+    setState(() {
+      _items = [
+        for (var i = 0; i < _items.length; i++)
+          if (i == index)
+            ConversationSummary(
+              id: conv.id,
+              title: conv.title,
+              avatarInitials: conv.avatarInitials,
+              avatarUrl: conv.avatarUrl,
+              lastMessagePreview: preview.isNotEmpty ? preview : conv.lastMessagePreview,
+              lastMessageType: msgType,
+              lastMessageTime: time ?? conv.lastMessageTime,
+              unreadCount: conv.unreadCount + unreadDelta,
+              isGroup: conv.isGroup,
+              channelKind: conv.channelKind,
+              isPinned: conv.isPinned,
+              isMuted: conv.isMuted,
+              isArchived: conv.isArchived,
+              online: conv.online,
+            )
+          else
+            _items[i],
+      ];
+      if (unreadDelta > 0) _totalUnread += unreadDelta;
+    });
   }
 
   void _initRepo() {
@@ -73,7 +147,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
   @override
   void dispose() {
-    _refreshTimer?.cancel();
+    _broadcastSub?.cancel();
+    final listener = _broadcastStateListener;
+    if (listener != null) {
+      _broadcastService?.removeListener(listener);
+    }
     _search.dispose();
     super.dispose();
   }
@@ -119,6 +197,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           _rateLimitNote = null;
           _error = null;
         });
+        context.read<MessagingBroadcastService>().syncConversations(items);
       }
     } catch (e) {
       if (mounted && !silent) {

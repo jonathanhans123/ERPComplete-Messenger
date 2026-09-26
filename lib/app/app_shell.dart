@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/auth/auth_repository.dart';
+import '../core/messaging/messaging_broadcast_service.dart';
 import '../core/messaging/messaging_repository.dart';
 import '../core/notifications/messenger_notification_service.dart';
 import '../core/calls/call_screen_navigator.dart';
@@ -31,11 +32,24 @@ class _MessengerHomeState extends State<MessengerHome> {
   final _backgroundWatcher = MessengerBackgroundWatcher();
   final _incomingCallWatcher = IncomingCallWatcher();
   bool _recovered = false;
+  bool _watchersStarted = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _recoverCallState());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startWatchers();
+      _recoverCallState();
+    });
+  }
+
+  void _startWatchers() {
+    if (_watchersStarted || !mounted) return;
+    _watchersStarted = true;
+    _backgroundWatcher.start(context);
+    _incomingCallWatcher.start(context);
+    final auth = context.read<AuthRepository>();
+    unawaited(context.read<MessagingBroadcastService>().connect(auth));
   }
 
   Future<void> _recoverCallState() async {
@@ -87,8 +101,6 @@ class _MessengerHomeState extends State<MessengerHome> {
 
   @override
   Widget build(BuildContext context) {
-    _backgroundWatcher.start(context);
-    _incomingCallWatcher.start(context);
     final width = MediaQuery.sizeOf(context).width;
     final isWide = width >= 900;
 
@@ -182,6 +194,9 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
+  bool _broadcastWired = false;
+  bool _lastAuthState = false;
+
   @override
   void initState() {
     super.initState();
@@ -213,6 +228,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final auth = context.read<AuthRepository>();
     await auth.refreshSession(logoutOnFailure: false);
     if (!mounted || !auth.isAuthenticated) return;
+    await context.read<MessagingBroadcastService>().connect(auth);
     unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     await context.read<CallSessionController>().recoverAfterLaunch(
@@ -226,10 +242,31 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     });
   }
 
+  void _syncBroadcast(AuthRepository auth) {
+    final broadcast = context.read<MessagingBroadcastService>();
+    if (auth.isAuthenticated) {
+      unawaited(broadcast.connect(auth));
+    } else {
+      unawaited(broadcast.disconnect());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<AuthRepository>(
       builder: (context, auth, _) {
+        if (!_broadcastWired && auth.isReady) {
+          _broadcastWired = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _syncBroadcast(auth);
+          });
+        }
+        if (auth.isReady && auth.isAuthenticated != _lastAuthState) {
+          _lastAuthState = auth.isAuthenticated;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _syncBroadcast(auth);
+          });
+        }
         if (!auth.isReady) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }

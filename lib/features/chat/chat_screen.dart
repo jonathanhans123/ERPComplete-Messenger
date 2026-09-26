@@ -12,6 +12,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/calls/call_session_controller.dart';
 import '../../core/cache/messenger_local_cache.dart';
 import '../../core/media/attachment_kind.dart';
+import '../../core/messaging/messaging_broadcast_service.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
 import '../../core/preferences/messenger_preferences.dart';
@@ -49,7 +50,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _sending = false;
   String? _error;
   ChatMessage? _replyTo;
-  Timer? _pollTimer;
+  StreamSubscription<MessagingBroadcastEvent>? _broadcastSub;
+  Timer? _fallbackPollTimer;
   Timer? _typingTimer;
   bool _typingSent = false;
   final _recorderController = RecorderController();
@@ -59,8 +61,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _recordingTimer;
   String? _voiceRecordPath;
   bool _showingCachedData = false;
-
-  static const _pollInterval = Duration(seconds: 3);
+  MessagingBroadcastService? _broadcastService;
 
   @override
   void initState() {
@@ -68,27 +69,87 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _initRepo();
     _load();
-    _startPolling();
+    _subscribeBroadcast();
     _input.addListener(_onInputChanged);
   }
 
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(_pollInterval, (_) => _pollMessages());
+  void _subscribeBroadcast() {
+    final auth = context.read<AuthRepository>();
+    final broadcast = context.read<MessagingBroadcastService>();
+    _broadcastService = broadcast;
+    broadcast.subscribeConversation(
+      widget.conversation.id,
+      title: widget.conversation.title,
+    );
+    _broadcastSub?.cancel();
+    _broadcastSub = broadcast.events.listen(_onBroadcastEvent);
+    broadcast.removeListener(_onBroadcastStateChanged);
+    broadcast.addListener(_onBroadcastStateChanged);
+    if (!broadcast.isConnected) {
+      unawaited(broadcast.connect(auth));
+    }
+    _updateFallbackPoll();
   }
 
-  void _stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
+  void _onBroadcastStateChanged() {
+    if (!mounted) return;
+    final broadcast = context.read<MessagingBroadcastService>();
+    if (broadcast.isConnected) {
+      broadcast.subscribeConversation(
+        widget.conversation.id,
+        title: widget.conversation.title,
+      );
+    }
+    _updateFallbackPoll();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _startPolling();
-      unawaited(_pollMessages());
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      _stopPolling();
+  void _updateFallbackPoll() {
+    final connected = context.read<MessagingBroadcastService>().isConnected;
+    if (connected) {
+      _fallbackPollTimer?.cancel();
+      _fallbackPollTimer = null;
+      return;
+    }
+    _fallbackPollTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || _loading || _sending) return;
+      if (context.read<MessagingBroadcastService>().isConnected) {
+        _updateFallbackPoll();
+        return;
+      }
+      unawaited(_load(silent: true));
+    });
+  }
+
+  void _onBroadcastEvent(MessagingBroadcastEvent event) {
+    if (event.conversationId != widget.conversation.id || !mounted) return;
+    final auth = context.read<AuthRepository>();
+    final uid = auth.userId ?? 0;
+
+    if (event.eventName == 'message.sent' || event.eventName == 'message.updated') {
+      final msg = ChatMessage.fromJson(event.data, uid);
+      if (msg.id == 0) return;
+
+      final existingIndex = _messages.indexWhere((m) => m.id == msg.id);
+      final nearBottom = _scroll.hasClients &&
+          (_scroll.position.maxScrollExtent - _scroll.offset) < 120;
+
+      setState(() {
+        if (existingIndex >= 0) {
+          _messages = [..._messages]..[existingIndex] = msg;
+        } else if (!_messages.any((m) => m.id == msg.id)) {
+          _messages = [..._messages, msg];
+        }
+        _rebuildEntries();
+      });
+
+      if (event.eventName == 'message.sent' && !msg.isSent) {
+        unawaited(_repo.markRead(widget.conversation.id).catchError((_) {}));
+      }
+      if (nearBottom || existingIndex < 0) _scrollToBottom();
+      unawaited(MessengerLocalCache.instance.saveMessages(
+        widget.conversation.id,
+        _messages.reversed.toList(),
+      ));
     }
   }
 
@@ -113,9 +174,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      final auth = context.read<AuthRepository>();
+      final broadcast = context.read<MessagingBroadcastService>();
+      unawaited(broadcast.connect(auth));
+      unawaited(_load(silent: true));
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _stopPolling();
+    _broadcastSub?.cancel();
+    _fallbackPollTimer?.cancel();
+    _broadcastService?.removeListener(_onBroadcastStateChanged);
     _typingTimer?.cancel();
     _recordingTimer?.cancel();
     _recorderController.dispose();
@@ -198,25 +271,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         });
       }
     }
-  }
-
-  Future<void> _pollMessages() async {
-    if (_loading || _sending || ApiThrottleGuard.instance.isBlocked) return;
-    try {
-      final messages = await _repo.fetchMessages(widget.conversation.id);
-      if (!mounted) return;
-      final reversed = messages.reversed.toList();
-      await MessengerLocalCache.instance.saveMessages(widget.conversation.id, messages);
-      if (chatMessagesChanged(_messages.where((m) => !m.isPending).toList(), reversed)) {
-        final nearBottom = _scroll.hasClients &&
-            (_scroll.position.maxScrollExtent - _scroll.offset) < 120;
-        setState(() {
-          _messages = reversed;
-          _rebuildEntries();
-        });
-        if (nearBottom) _scrollToBottom();
-      }
-    } catch (_) {}
   }
 
   void _scrollToBottom({bool animated = true, int attempts = 8}) {

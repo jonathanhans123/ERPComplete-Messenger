@@ -17,7 +17,10 @@ class IncomingCallBanner extends StatelessWidget {
     final incoming = context.watch<IncomingCallController>();
     final invite = incoming.pending;
 
-    if (callSession.isActive || invite == null) {
+    if (callSession.isActive && callSession.connected) {
+      return const SizedBox.shrink();
+    }
+    if (invite == null) {
       return const SizedBox.shrink();
     }
 

@@ -149,6 +149,12 @@ class CallSessionController extends ChangeNotifier {
         return;
       }
 
+      // Incoming ring — show accept/decline UI; do not auto-join as "rejoin".
+      if (!snap.isOutgoing && phase == 'ringing' && callMsg != null) {
+        await CallSessionStorage.clear();
+        return;
+      }
+
       final canRejoin = snap.callWasAnswered ||
           snap.isOutgoing ||
           phase == 'live' ||
@@ -849,10 +855,33 @@ class CallSessionController extends ChangeNotifier {
       needsActive: _shouldEndAsCompleted() && !_activeSignalSent,
     );
 
+    // Signal remote peers first so web/mobile sync duration before LiveKit teardown.
+    await _finishEnd(snapshot);
     _tearDownLocalState();
     notifyListeners();
+  }
 
-    unawaited(_finishEnd(snapshot));
+  /// Remote party ended/declined — tear down locally without sending another signal.
+  Future<void> applyRemoteEnded({int? durationSeconds}) async {
+    if (_ending) return;
+    if (!active && !connecting) return;
+    _connectEpoch++;
+    _ending = true;
+    _autoEnding = true;
+    _cancelRingTimeout();
+    _tearDownLocalState();
+    await CallSessionStorage.clear();
+    _ending = false;
+    notifyListeners();
+  }
+
+  /// Clear zombie session when a new invite targets a different call.
+  Future<void> prepareForIncomingInvite(String callSessionId) async {
+    if (!active || callSessionId.isEmpty) return;
+    if (sessionId == callSessionId && connected) return;
+    if (sessionId != callSessionId || needsRejoin || connecting) {
+      await forceReset();
+    }
   }
 
   Future<void> _finishEnd(_EndSnapshot snapshot) async {

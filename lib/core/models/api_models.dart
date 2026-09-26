@@ -296,6 +296,8 @@ extension ChatMessageCallX on ChatMessage {
     if (meta == null || meta.roomName.isEmpty || meta.callSessionId.isEmpty) return false;
     final phase = meta.phase.toLowerCase();
     if (phase == 'declined' || phase == 'ended') return false;
+    // Incoming ring is accept/decline only — not a rejoin target.
+    if (!isSent && phase == 'ringing') return false;
     return phase == 'live' || phase == 'ringing';
   }
 }
@@ -325,12 +327,24 @@ class ChatMessage {
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> json, int currentUserId) {
-    final senderId = json['sender_id'] as int? ?? json['user_id'] as int? ?? 0;
+    final senderRaw = json['sender'];
+    var senderId = json['sender_id'] as int? ?? json['user_id'] as int? ?? 0;
+    var senderName = 'Unknown';
+    if (senderRaw is Map) {
+      senderId = senderId != 0 ? senderId : (senderRaw['id'] as int? ?? 0);
+      senderName = senderRaw['name'] as String? ?? senderName;
+    } else if (senderRaw is String && senderRaw.isNotEmpty) {
+      senderName = senderRaw;
+    }
     final user = json['user'];
-    final senderName = json['sender'] as String? ??
-        json['sender_name'] as String? ??
-        (user is Map ? user['name'] as String? : null) ??
-        'Unknown';
+    if (senderName == 'Unknown') {
+      senderName = json['sender_name'] as String? ??
+          (user is Map ? user['name'] as String? : null) ??
+          senderName;
+    }
+    if (senderId == 0 && user is Map) {
+      senderId = user['id'] as int? ?? 0;
+    }
     final msgType = json['type'] as String? ?? 'text';
 
     final replyTo = json['reply_to'];

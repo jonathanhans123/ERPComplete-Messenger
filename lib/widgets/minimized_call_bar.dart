@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/calls/call_session_controller.dart';
+import '../core/calls/incoming_call_controller.dart';
 import '../core/notifications/messenger_notification_service.dart';
 import '../theme/messenger_theme.dart';
 
@@ -15,6 +16,11 @@ class MinimizedCallBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final incoming = context.watch<IncomingCallController>();
+    if (incoming.hasPending) {
+      return const SizedBox.shrink();
+    }
+
     final call = context.watch<CallSessionController>();
     if (!call.active || call.conversation == null) {
       return const SizedBox.shrink();
