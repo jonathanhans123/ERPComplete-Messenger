@@ -457,7 +457,7 @@ class _StatusTicks extends StatelessWidget {
     }
     final normalized = status == 'read' ? 'read' : (status == 'sending' ? 'sending' : 'sent');
     if (normalized == 'read') {
-      return Icon(Icons.done_all, size: 16, color: MessengerPalette.accent);
+      return const Icon(Icons.done_all, size: 16, color: MessengerPalette.accent);
     }
     if (normalized == 'sending') {
       return Icon(Icons.done, size: 14, color: color.withValues(alpha: 0.5));

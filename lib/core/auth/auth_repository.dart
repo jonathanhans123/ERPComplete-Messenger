@@ -61,8 +61,15 @@ class AuthRepository extends ChangeNotifier {
     }
   }
 
+  /// Storage loading without the network session refresh that [bootstrap] adds.
+  @visibleForTesting
+  Future<void> loadStoredCredentialsForTest() => _loadStoredCredentials();
+
   Future<void> _loadStoredCredentials() async {
     _token = await _readStorage(_tokenKey);
+    // The profile fields mean nothing without a token, and each empty read waits out the
+    // retry back-off — skipping them keeps signed-out launches from idling on a spinner.
+    if (!isAuthenticated) return;
     _userName = await _readStorage(_userNameKey);
     _userEmail = await _readStorage(_userEmailKey);
     _userId = int.tryParse(await _readStorage(_userIdKey) ?? '');

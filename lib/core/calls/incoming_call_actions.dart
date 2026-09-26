@@ -21,11 +21,14 @@ class IncomingCallActions {
     unawaited(IncomingCallRingtone.stop());
     unawaited(MessengerNotificationService.instance.clearIncomingCallNotification());
 
+    // Resolve everything from [context] up front: clearing the invite removes the banner
+    // that usually owns it, so it may be unmounted once the awaits below return.
     final incoming = context.read<IncomingCallController>();
+    final auth = context.read<AuthRepository>();
+    final messenger = _messengerFor(context);
     incoming.clear(messageId: invite.message.id, handled: true);
 
     try {
-      final auth = context.read<AuthRepository>();
       final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
       await CallSessionController.declineCallInvite(
         repo: repo,
@@ -33,7 +36,7 @@ class IncomingCallActions {
         callMessage: invite.message,
       );
     } catch (e) {
-      _snack(context, formatApiError(e));
+      _snack(messenger, formatApiError(e));
     }
   }
 
@@ -41,10 +44,13 @@ class IncomingCallActions {
     unawaited(IncomingCallRingtone.stop());
     unawaited(MessengerNotificationService.instance.clearIncomingCallNotification());
 
+    // Resolve everything from [context] up front (see [decline]).
     final incoming = context.read<IncomingCallController>();
+    final call = context.read<CallSessionController>();
+    final auth = context.read<AuthRepository>();
+    final messenger = _messengerFor(context);
     incoming.clear(messageId: invite.message.id, handled: true);
 
-    final call = context.read<CallSessionController>();
     if (call.isActive && CallScreenNavigator.isOpen) {
       return;
     }
@@ -54,10 +60,10 @@ class IncomingCallActions {
 
     // Show call UI immediately; connect in the background (do not await push — it lasts until hang up).
     if (!CallScreenNavigator.isOpen) {
-      unawaited(CallScreenNavigator.open(context));
+      // open() prefers the app navigator; the context is only a fallback.
+      unawaited(CallScreenNavigator.open(context.mounted ? context : null));
     }
 
-    final auth = context.read<AuthRepository>();
     if (!auth.isAuthenticated) {
       CallScreenNavigator.popIfOpen();
       return;
@@ -78,14 +84,19 @@ class IncomingCallActions {
     } catch (e) {
       await call.forceReset();
       CallScreenNavigator.popIfOpen();
-      _snack(context, formatApiError(e));
+      _snack(messenger, formatApiError(e));
     }
   }
 
-  static void _snack(BuildContext context, String message) {
+  /// The app-level messenger when available, otherwise the caller's — resolved before any await.
+  static ScaffoldMessengerState? _messengerFor(BuildContext context) {
     final nav = IncomingCallActionHandler.navigatorKey?.currentState;
     final ctx = (nav?.mounted == true) ? nav!.context : context;
-    if (!ctx.mounted) return;
-    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(message)));
+    return ScaffoldMessenger.maybeOf(ctx);
+  }
+
+  static void _snack(ScaffoldMessengerState? messenger, String message) {
+    if (messenger == null || !messenger.mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 }

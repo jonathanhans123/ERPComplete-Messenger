@@ -111,7 +111,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                             ),
                             if (_token != null) ...[
                               const SizedBox(height: 12),
-                              Text('${_token!.url}', style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11)),
+                              Text(_token!.url, style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11)),
                             ],
                           ],
                         ),

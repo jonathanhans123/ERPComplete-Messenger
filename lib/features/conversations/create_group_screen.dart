@@ -5,7 +5,6 @@ import '../../core/api/api_client.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
-import '../../theme/messenger_theme.dart';
 import '../../widgets/messenger_avatar.dart';
 
 class CreateGroupScreen extends StatefulWidget {

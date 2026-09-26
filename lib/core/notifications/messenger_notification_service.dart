@@ -158,7 +158,7 @@ class MessengerNotificationService {
       _incomingCallNotificationId,
       isVideo ? 'Incoming video call' : 'Incoming voice call',
       callerName,
-      NotificationDetails(
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           _incomingCallChannelId,
           'Incoming calls',
@@ -171,7 +171,7 @@ class MessengerNotificationService {
           ongoing: true,
           autoCancel: false,
           icon: '@mipmap/ic_launcher',
-          actions: const [
+          actions: [
             AndroidNotificationAction(
               actionDecline,
               'Decline',
@@ -211,7 +211,7 @@ class MessengerNotificationService {
       _callNotificationId,
       isVideo ? 'Video call' : 'Voice call',
       title,
-      NotificationDetails(
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           _callChannelId,
           'Calls',

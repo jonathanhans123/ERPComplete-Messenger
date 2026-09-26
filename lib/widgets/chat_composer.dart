@@ -181,7 +181,7 @@ class _ChatComposerState extends State<ChatComposer> {
 
                         children: [
 
-                          Text('Replying', style: TextStyle(color: MessengerPalette.whatsAppGreen, fontSize: 12, fontWeight: FontWeight.w600)),
+                          const Text('Replying', style: TextStyle(color: MessengerPalette.whatsAppGreen, fontSize: 12, fontWeight: FontWeight.w600)),
 
                           Text(widget.replyPreview!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: ext.subtext, fontSize: 13)),
 

@@ -91,8 +91,8 @@ class _ConversationInfoScreenState extends State<ConversationInfoScreen> {
                             Text(d.description!, textAlign: TextAlign.center, style: TextStyle(color: ext.subtext)),
                           ],
                           if (!c.isGroup && c.online == true)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 6),
+                            const Padding(
+                              padding: EdgeInsets.only(top: 6),
                               child: Text('online', style: TextStyle(color: MessengerPalette.whatsAppGreen, fontWeight: FontWeight.w600)),
                             ),
                         ],
@@ -169,12 +169,13 @@ class _ConversationInfoScreenState extends State<ConversationInfoScreen> {
         description: detail.description,
         participantIds: [...existing, ...added],
       );
-      if (mounted) {
+      // The `context` parameter is the caller's; check it as well as this State.
+      if (mounted && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Members added')));
         _load();
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
     }
   }
 
@@ -212,12 +213,12 @@ class _ConversationInfoScreenState extends State<ConversationInfoScreen> {
         description: descCtrl.text.trim(),
         participantIds: selected.toList(),
       );
-      if (mounted) {
+      if (mounted && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Group updated')));
         _load();
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
     }
   }
 }

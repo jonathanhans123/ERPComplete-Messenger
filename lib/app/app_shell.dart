@@ -55,18 +55,19 @@ class _MessengerHomeState extends State<MessengerHome> {
   Future<void> _recoverCallState() async {
     if (_recovered || !mounted) return;
     _recovered = true;
-    await MessengerNotificationService.instance.clearAllCallNotifications();
+    // Look providers up before any await; the context may be gone once the awaits return.
     final auth = context.read<AuthRepository>();
+    final call = context.read<CallSessionController>();
+    await MessengerNotificationService.instance.clearAllCallNotifications();
     await auth.refreshSession(logoutOnFailure: false);
     if (!mounted || !auth.isAuthenticated) return;
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     final name = auth.userName ?? 'User';
-    await context.read<CallSessionController>().recoverAfterLaunch(
+    await call.recoverAfterLaunch(
           messagingRepo: repo,
           callerName: name,
           coldStart: true,
         );
-    final call = context.read<CallSessionController>();
     if (!mounted || !call.active || call.conversation == null) return;
     if (call.connected || call.connecting || call.needsRejoin) {
       await CallScreenNavigator.open(context);
@@ -226,12 +227,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Future<void> _onAppResumed() async {
     if (!mounted) return;
     final auth = context.read<AuthRepository>();
+    final broadcast = context.read<MessagingBroadcastService>();
+    final call = context.read<CallSessionController>();
     await auth.refreshSession(logoutOnFailure: false);
     if (!mounted || !auth.isAuthenticated) return;
-    await context.read<MessagingBroadcastService>().connect(auth);
+    await broadcast.connect(auth);
+    if (!mounted) return;
     unawaited(MessengerNotificationService.instance.clearAllCallNotifications());
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
-    await context.read<CallSessionController>().recoverAfterLaunch(
+    await call.recoverAfterLaunch(
           messagingRepo: repo,
           callerName: auth.userName ?? 'User',
           coldStart: false,

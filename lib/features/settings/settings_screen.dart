@@ -33,7 +33,7 @@ class SettingsScreen extends StatelessWidget {
             subtitle: Text(auth.userEmail ?? ''),
           ),
           const Divider(height: 32),
-          _SectionHeader(title: 'Appearance'),
+          const _SectionHeader(title: 'Appearance'),
           ListTile(
             leading: const Icon(Icons.brightness_6_outlined),
             title: const Text('Theme'),
@@ -48,7 +48,7 @@ class SettingsScreen extends StatelessWidget {
             ),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WallpaperPickerScreen())),
           ),
-          _SectionHeader(title: 'Notifications (mobile)'),
+          const _SectionHeader(title: 'Notifications (mobile)'),
           SwitchListTile(
             secondary: const Icon(Icons.notifications_active_outlined),
             title: const Text('Message notifications'),
@@ -67,21 +67,21 @@ class SettingsScreen extends StatelessWidget {
             subtitle: Text('${prefs.mutedConversationIds.length} conversations (mobile only)'),
           ),
           const Divider(height: 32),
-          _SectionHeader(title: 'Chats'),
+          const _SectionHeader(title: 'Chats'),
           ListTile(
             leading: const Icon(Icons.archive_outlined),
             title: const Text('Archived chats'),
             subtitle: Text('Use Archived filter on Chats tab', style: TextStyle(color: ext.subtext, fontSize: 13)),
           ),
           const Divider(height: 32),
-          _SectionHeader(title: 'About'),
-          ListTile(
-            leading: const Icon(Icons.info_outline),
-            title: const Text('Version'),
-            subtitle: const Text('0.1.0'),
+          const _SectionHeader(title: 'About'),
+          const ListTile(
+            leading: Icon(Icons.info_outline),
+            title: Text('Version'),
+            subtitle: Text('0.1.0'),
           ),
           const Divider(height: 32),
-          _SectionHeader(title: 'Account'),
+          const _SectionHeader(title: 'Account'),
           ListTile(
             leading: const Icon(Icons.logout, color: MessengerPalette.danger),
             title: const Text('Sign out', style: TextStyle(color: MessengerPalette.danger, fontWeight: FontWeight.w600)),
@@ -124,16 +124,20 @@ class SettingsScreen extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(title: const Text('Theme'), trailing: IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx))),
-            for (final mode in ThemeMode.values)
-              RadioListTile<ThemeMode>(
-                value: mode,
-                groupValue: themeCtrl.mode,
-                title: Text(_themeLabel(mode)),
-                onChanged: (v) {
-                  if (v != null) themeCtrl.setMode(v);
-                  Navigator.pop(ctx);
-                },
+            RadioGroup<ThemeMode>(
+              groupValue: themeCtrl.mode,
+              onChanged: (v) {
+                if (v != null) themeCtrl.setMode(v);
+                Navigator.pop(ctx);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final mode in ThemeMode.values)
+                    RadioListTile<ThemeMode>(value: mode, title: Text(_themeLabel(mode))),
+                ],
               ),
+            ),
           ],
         ),
       ),

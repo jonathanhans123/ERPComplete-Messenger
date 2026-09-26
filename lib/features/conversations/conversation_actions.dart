@@ -55,7 +55,7 @@ class ConversationActions {
         ],
       ),
     );
-    if (ok != true) return;
+    if (ok != true || !context.mounted) return;
     try {
       await repoOf(context).clearChat(c.id);
       onChanged?.call();
@@ -82,7 +82,8 @@ class ConversationActions {
       await call.end();
       await MessengerNotificationService.instance.clearAllCallNotifications();
     }
-    unawaited(CallScreenNavigator.open(context));
+    // open() prefers the app navigator; the context is only a fallback.
+    unawaited(CallScreenNavigator.open(context.mounted ? context : null));
     await call.start(
       conv: c,
       messagingRepo: repo,
@@ -286,12 +287,12 @@ Future<ConversationSummary?> showNewChatFlow(BuildContext context) async {
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: CircleAvatar(backgroundColor: MessengerPalette.whatsAppGreen, child: const Icon(Icons.person_add, color: Colors.white)),
+            leading: const CircleAvatar(backgroundColor: MessengerPalette.whatsAppGreen, child: Icon(Icons.person_add, color: Colors.white)),
             title: const Text('New chat'),
             onTap: () => Navigator.pop(ctx, 'direct'),
           ),
           ListTile(
-            leading: CircleAvatar(backgroundColor: MessengerPalette.accent, child: const Icon(Icons.group_add, color: Colors.white)),
+            leading: const CircleAvatar(backgroundColor: MessengerPalette.accent, child: Icon(Icons.group_add, color: Colors.white)),
             title: const Text('New group'),
             onTap: () => Navigator.pop(ctx, 'group'),
           ),
@@ -377,9 +378,10 @@ class _DirectChatPickerState extends State<_DirectChatPicker> {
                         onTap: () async {
                           try {
                             final c = await _repo.createConversation(type: 'direct', participantIds: [u.id]);
-                            if (mounted) Navigator.pop(context, c);
+                            // `context` here is the sheet builder's, not this State's — check it directly.
+                            if (context.mounted) Navigator.pop(context, c);
                           } catch (e) {
-                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
+                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
                           }
                         },
                       );

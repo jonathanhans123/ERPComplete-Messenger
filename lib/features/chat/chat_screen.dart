@@ -60,7 +60,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   int _recordingSeconds = 0;
   Timer? _recordingTimer;
   String? _voiceRecordPath;
-  bool _showingCachedData = false;
   MessagingBroadcastService? _broadcastService;
 
   @override
@@ -219,7 +218,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _messages = cached.reversed.toList();
           _rebuildEntries();
           _loading = false;
-          _showingCachedData = true;
         });
         _scrollToBottom(animated: false);
         Future.delayed(const Duration(milliseconds: 150), () {
@@ -252,7 +250,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _messages = messages.reversed.toList();
           _rebuildEntries();
           if (!silent) _loading = false;
-          _showingCachedData = false;
           _error = null;
         });
         if (!silent) {
@@ -267,7 +264,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         setState(() {
           _error = _messages.isEmpty ? formatApiError(e) : null;
           _loading = false;
-          _showingCachedData = _messages.isNotEmpty;
         });
       }
     }
