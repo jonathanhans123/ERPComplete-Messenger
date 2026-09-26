@@ -103,7 +103,7 @@ class SettingsScreen extends StatelessWidget {
             },
           ),
           const SizedBox(height: 24),
-          Center(child: Text('ERPComplete Messenger', style: TextStyle(color: ext.subtext, fontSize: 12))),
+          Center(child: Text('ERPMessage', style: TextStyle(color: ext.subtext, fontSize: 12))),
           const SizedBox(height: 24),
         ],
       ),

@@ -105,10 +105,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 20),
                     Text(
-                      'ERPComplete',
+                      'ERPMessage',
                       style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5),
                     ),
-                    Text('Messenger', style: TextStyle(color: ext.subtext, fontSize: 16)),
+                    Text('by ERPComplete', style: TextStyle(color: ext.subtext, fontSize: 16)),
                     const SizedBox(height: 32),
                     Card(
                       elevation: isDark ? 0 : 8,

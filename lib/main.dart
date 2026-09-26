@@ -61,7 +61,7 @@ class ErpMessengerApp extends StatelessWidget {
         builder: (context, themeCtrl, _) {
           return MaterialApp(
             navigatorKey: navigatorKey,
-            title: 'ERPComplete Messenger',
+            title: 'ERPMessage',
             theme: buildMessengerTheme(brightness: Brightness.light),
             darkTheme: buildMessengerTheme(brightness: Brightness.dark),
             themeMode: themeCtrl.mode,

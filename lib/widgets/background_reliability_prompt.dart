@@ -65,7 +65,7 @@ class _BackgroundReliabilityDialogState extends State<_BackgroundReliabilityDial
     return AlertDialog(
       title: const Text('Allow background operation'),
       content: const Text(
-        'ERPComplete Messenger needs to run in the background for incoming calls and '
+        'ERPMessage needs to run in the background for incoming calls and '
         'message alerts.\n\n'
         'On the next screen, tap Allow. If you do not see that option, open App info → '
         'Battery and set Battery saver to No restrictions (Unrestricted).',
