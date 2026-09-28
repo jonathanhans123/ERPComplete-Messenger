@@ -553,8 +553,15 @@ class CallSessionController extends ChangeNotifier {
           scheduleMicrotask(() => unawaited(end()));
         }
       })
-      ..on<RoomDisconnectedEvent>((_) {
+      ..on<RoomDisconnectedEvent>((event) {
         if (_ending || !active) return;
+        if (event.reason == DisconnectReason.duplicateIdentity) {
+          // The same user joined this call from another device (e.g. Rejoin on the web): the call moved
+          // there. Leave quietly: sending an end signal here used to end the call as "Call cancelled".
+          statusMessage = 'Call continued on your other device';
+          scheduleMicrotask(() => unawaited(applyRemoteEnded()));
+          return;
+        }
         if (_rejoinGraceUntil != null && DateTime.now().isBefore(_rejoinGraceUntil!)) {
           unawaited(_retryAfterRoomDrop());
           return;
