@@ -96,4 +96,31 @@ class MessengerLocalCache {
       return [];
     }
   }
+
+  /// Deletes the cached messages for one conversation (used after delete).
+  Future<void> deleteMessages(int conversationId) async {
+    try {
+      final file = await _cacheFile('messages_$conversationId.json');
+      if (file.existsSync()) await file.delete();
+    } catch (_) {}
+  }
+
+  /// Wipes all cached conversations + messages. Called on sign out, session
+  /// expiry, and fresh login so a previous account (or a wiped database)
+  /// never shows up as ghost chats.
+  Future<void> clearAll() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory('${dir.path}/messenger_cache');
+      if (!folder.existsSync()) return;
+      for (final entity in folder.listSync()) {
+        final name = entity.path.split(Platform.pathSeparator).last;
+        if (name == 'conversations.json' || (name.startsWith('messages_') && name.endsWith('.json'))) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
 }

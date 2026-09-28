@@ -3,8 +3,10 @@ import 'dart:io';
 
 import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/api/api_throttle_guard.dart';
@@ -45,11 +47,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<ChatMessage> _messages = [];
+
+  /// client_message_id -> id of the pending copy, so the real-time echo of one's own message replaces
+  /// the pending copy instead of being added next to it.
+  final Map<String, int> _pendingByClientId = {};
   List<ChatListEntry> _entries = [];
   bool _loading = true;
   bool _sending = false;
   String? _error;
   ChatMessage? _replyTo;
+  // Premium open: list is reverse:true so offset 0 IS the bottom — no
+  // jump-to-bottom animation is ever needed on open. Fade the list in once
+  // data is painted instead of visibly fast-scrolling through history.
+  bool _listReady = false;
+  int _page = 1;
+  static const int _perPage = 50;
+  bool _hasMore = true;
+  bool _loadingMore = false;
+  int _unseenWhileUp = 0;
   StreamSubscription<MessagingBroadcastEvent>? _broadcastSub;
   Timer? _fallbackPollTimer;
   Timer? _typingTimer;
@@ -67,9 +82,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initRepo();
+    _scroll.addListener(_onScroll);
     _load();
     _subscribeBroadcast();
     _input.addListener(_onInputChanged);
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients || _loadingMore || !_hasMore || _loading) return;
+    // reverse:true → maxScrollExtent is the TOP (oldest). Load older when near it.
+    final pos = _scroll.position;
+    if (pos.maxScrollExtent - pos.pixels < 400) {
+      unawaited(_loadMore());
+    }
+  }
+
+  bool get _isNearBottom {
+    if (!_scroll.hasClients) return true;
+    return _scroll.offset < 120;
   }
 
   void _subscribeBroadcast() {
@@ -109,8 +139,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _fallbackPollTimer = null;
       return;
     }
-    _fallbackPollTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
+    // Fallback only when WebSocket is down. 15s interval + throttle respect
+    // keeps an open chat from tripping rate limits on its own.
+    _fallbackPollTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted || _loading || _sending) return;
+      if (ApiThrottleGuard.instance.isBlocked) return;
       if (context.read<MessagingBroadcastService>().isConnected) {
         _updateFallbackPoll();
         return;
@@ -128,9 +161,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final msg = ChatMessage.fromJson(event.data, uid);
       if (msg.id == 0) return;
 
-      final existingIndex = _messages.indexWhere((m) => m.id == msg.id);
-      final nearBottom = _scroll.hasClients &&
-          (_scroll.position.maxScrollExtent - _scroll.offset) < 120;
+      var existingIndex = _messages.indexWhere((m) => m.id == msg.id);
+      final pendingId = _pendingByClientId[event.data['client_message_id']];
+      if (existingIndex < 0 && pendingId != null) {
+        existingIndex = _messages.indexWhere((m) => m.id == pendingId);
+      }
+      final wasNearBottom = _isNearBottom;
 
       setState(() {
         if (existingIndex >= 0) {
@@ -139,12 +175,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _messages = [..._messages, msg];
         }
         _rebuildEntries();
+        // New incoming while reading history → pill instead of yanking scroll.
+        if (existingIndex < 0 && event.eventName == 'message.sent' && !msg.isSent && !wasNearBottom) {
+          _unseenWhileUp++;
+        }
       });
 
       if (event.eventName == 'message.sent' && !msg.isSent) {
         unawaited(_repo.markRead(widget.conversation.id).catchError((_) {}));
       }
-      if (nearBottom || existingIndex < 0) _scrollToBottom();
+      // reverse:true list stays pinned at offset 0 on its own; only animate
+      // when the user was already at the bottom (or it's an edit in view).
+      if (wasNearBottom) {
+        _scrollToBottom();
+        if (mounted) setState(() => _unseenWhileUp = 0);
+      }
       unawaited(MessengerLocalCache.instance.saveMessages(
         widget.conversation.id,
         _messages.reversed.toList(),
@@ -156,13 +201,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _typingTimer?.cancel();
     final hasText = _input.text.trim().isNotEmpty;
     if (hasText && !_typingSent) {
+      if (ApiThrottleGuard.instance.isBlocked) return;
       _typingSent = true;
-      _repo.sendTyping(widget.conversation.id, true).catchError((_) {});
+      _repo.sendTyping(widget.conversation.id, true).catchError((_) {
+        _typingSent = false;
+      });
     }
-    _typingTimer = Timer(const Duration(seconds: 2), () {
+    _typingTimer = Timer(const Duration(seconds: 3), () {
       if (_typingSent) {
         _typingSent = false;
-        _repo.sendTyping(widget.conversation.id, false).catchError((_) {});
+        if (!ApiThrottleGuard.instance.isBlocked) {
+          _repo.sendTyping(widget.conversation.id, false).catchError((_) {});
+        }
       }
     });
   }
@@ -188,6 +238,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _broadcastSub?.cancel();
     _fallbackPollTimer?.cancel();
     _broadcastService?.removeListener(_onBroadcastStateChanged);
+    _scroll.removeListener(_onScroll);
     _typingTimer?.cancel();
     _recordingTimer?.cancel();
     _recorderController.dispose();
@@ -218,10 +269,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _messages = cached.reversed.toList();
           _rebuildEntries();
           _loading = false;
+          _page = 1;
+          _hasMore = cached.length >= _perPage;
         });
-        _scrollToBottom(animated: false);
-        Future.delayed(const Duration(milliseconds: 150), () {
-          if (mounted) _scrollToBottom(animated: false);
+        // No scroll jump: reverse list already sits at the bottom.
+        // Fade in after first paint so open feels instant, not scrolled.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_listReady) setState(() => _listReady = true);
         });
       } else if (!silent) {
         setState(() {
@@ -240,22 +294,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     try {
-      final messages = await _repo.fetchMessages(widget.conversation.id);
+      final messages = await _repo.fetchMessages(widget.conversation.id, page: 1, perPage: _perPage);
       await MessengerLocalCache.instance.saveMessages(widget.conversation.id, messages);
       try {
         await _repo.markRead(widget.conversation.id);
       } catch (_) {}
       if (mounted) {
+        final chronological = messages.reversed.toList();
+        final changed = chatMessagesChanged(_messages, chronological);
         setState(() {
-          _messages = messages.reversed.toList();
-          _rebuildEntries();
+          // Smart merge: skip setState churn when server state is identical —
+          // this is what caused the visible re-layout + re-scroll flicker.
+          if (changed || _messages.isEmpty) {
+            _messages = chronological;
+            _rebuildEntries();
+          }
+          _page = 1;
+          _hasMore = messages.length >= _perPage;
           if (!silent) _loading = false;
           _error = null;
         });
-        if (!silent) {
+        // Pin to bottom only if the user was already there (or first open).
+        // Never yank a user who scrolled up to read history.
+        if (_isNearBottom) {
           _scrollToBottom(animated: false);
-          Future.delayed(const Duration(milliseconds: 150), () {
-            if (mounted) _scrollToBottom(animated: false);
+        }
+        if (!_listReady) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() => _listReady = true);
           });
         }
       }
@@ -269,26 +335,54 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _scrollToBottom({bool animated = true, int attempts = 8}) {
-    void schedule(int remaining) {
+  /// Pagination: fetch the next older page and prepend without moving the
+  /// visible viewport (reverse list keeps offset stable).
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore || !mounted) return;
+    _loadingMore = true;
+    try {
+      final next = _page + 1;
+      final fetched = await _repo.fetchMessages(widget.conversation.id, page: next, perPage: _perPage);
+      if (!mounted) return;
+      if (fetched.isEmpty) {
+        setState(() => _hasMore = false);
+        return;
+      }
+      final older = fetched.reversed.toList();
+      final known = _messages.map((m) => m.id).toSet();
+      final fresh = older.where((m) => !known.contains(m.id)).toList();
+      setState(() {
+        _messages = [...fresh, ..._messages];
+        _rebuildEntries();
+        _page = next;
+        if (fetched.length < _perPage) _hasMore = false;
+      });
+    } catch (_) {
+      // Silent: user can retry by scrolling again.
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
+  void _scrollToBottom({bool animated = true}) {
+    // reverse:true → bottom IS offset 0, always valid, no retry loop needed.
+    if (!_scroll.hasClients) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scroll.hasClients) {
-          if (remaining > 0) schedule(remaining - 1);
-          return;
-        }
-        final max = _scroll.position.maxScrollExtent;
-        if (max <= 0 && remaining > 0) {
-          schedule(remaining - 1);
-          return;
-        }
+        if (!_scroll.hasClients || !mounted) return;
         if (animated) {
-          _scroll.animateTo(max, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+          _scroll.animateTo(0, duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
         } else {
-          _scroll.jumpTo(max);
+          _scroll.jumpTo(0);
         }
       });
+      return;
     }
-    schedule(attempts);
+    if (animated) {
+      _scroll.animateTo(0, duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
+    } else {
+      _scroll.jumpTo(0);
+    }
+    if (mounted && _unseenWhileUp != 0) setState(() => _unseenWhileUp = 0);
   }
 
   Future<void> _send() async {
@@ -303,6 +397,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final auth = context.read<AuthRepository>();
     final tempId = -DateTime.now().millisecondsSinceEpoch;
+    final clientMessageId = const Uuid().v4();
+    _pendingByClientId[clientMessageId] = tempId;
     final now = DateTime.now();
     final pending = ChatMessage(
       id: tempId,
@@ -329,9 +425,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         conversationId: widget.conversation.id,
         body: text,
         replyToMessageId: replyId,
+        clientMessageId: clientMessageId,
       );
       if (mounted) {
         setState(() {
+          // The real-time echo can arrive before this response and has already put the saved message
+          // in the list: drop the pending copy instead of turning it into a second one.
+          if (_messages.any((m) => m.id == msg.id)) {
+            _messages = _messages.where((m) => m.id != tempId).toList();
+          }
           _messages = _messages.map((m) => m.id == tempId ? msg.copyWith(replyPreview: replyPreview, replyToSender: replySender, replyToId: replyId) : m).toList();
           _rebuildEntries();
         });
@@ -343,10 +445,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _messages = _messages.where((m) => m.id != tempId).toList();
           _rebuildEntries();
         });
+        // 401 triggers global auto-logout — don't restore the draft into a
+        // session that is being signed out.
+        if (e is ApiException && e.isUnauthorized) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
         _input.text = text;
       }
     } finally {
+      _pendingByClientId.remove(clientMessageId);
       if (mounted) setState(() => _sending = false);
     }
   }
@@ -358,8 +464,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       repo: _repo,
       conversationId: widget.conversation.id,
       onSent: (msg) {
+        if (!mounted) return;
         setState(() {
-          _messages = [..._messages, msg];
+          if (!_messages.any((m) => m.id == msg.id)) _messages = [..._messages, msg];
           _rebuildEntries();
         });
         _scrollToBottom();
@@ -477,7 +584,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
       if (mounted) {
         setState(() {
-          _messages = [..._messages, msg];
+          if (!_messages.any((m) => m.id == msg.id)) _messages = [..._messages, msg];
           _rebuildEntries();
         });
         _scrollToBottom();
@@ -655,8 +762,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   context,
                   value: v,
                   conversation: widget.conversation,
-                  onChanged: () => _load(),
+                  onChanged: () {
+                    if (v != 'delete' && mounted) _load();
+                  },
                   muted: muted,
+                  onDeleted: () {
+                    // Chat is gone — go back to the list instead of showing a dead chat.
+                    if (widget.onBack != null) {
+                      widget.onBack!();
+                    } else if (mounted && Navigator.canPop(context)) {
+                      Navigator.pop(context);
+                    }
+                  },
                 );
               }
             },
@@ -674,7 +791,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             child: DecoratedBox(
               decoration: BoxDecoration(color: prefs.customWallpaperPath != null ? Colors.transparent : bgColor),
               child: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? _ChatSkeleton(bgColor: bgColor)
                 : _error != null
                     ? Center(
                         child: Padding(
@@ -702,53 +819,124 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                               ],
                             ),
                           )
-                        : ListView.builder(
-                            controller: _scroll,
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            itemCount: _entries.length,
-                            itemBuilder: (context, index) {
-                              final entry = _entries[index];
-                              if (entry is ChatDateDividerEntry) {
-                                return DateDivider(label: entry.label);
-                              }
-                              final msg = (entry as ChatMessageEntry).message;
-                              final uid = context.read<AuthRepository>().userId;
-                              final callCtrl = context.read<CallSessionController>();
-                              final canRejoin = msg.isRejoinableCall &&
-                                  !ConversationActions.isAlreadyInCall(
-                                    call: callCtrl,
-                                    conversationId: widget.conversation.id,
-                                    callSessionId: msg.callMeta?.callSessionId,
-                                  );
-                              return MessageBubble(
-                                message: msg,
-                                showSender: isGroup,
-                                currentUserId: uid,
-                                onMediaOpen: _openMediaViewer,
-                                onCallRejoin: canRejoin ? _rejoinCall : null,
-                                onPollVote: msg.pollAttachment != null ? (opt) => _votePoll(msg, opt) : null,
-                                onLongPress: () => showMessageActions(
-                                  context,
-                                  message: msg,
-                                  repo: _repo,
-                                  conversationId: widget.conversation.id,
-                                  onUpdated: (m) {
-                                    if (m == null) {
-                                      setState(() {
-                                        _messages = _messages.where((x) => x.id != msg.id).toList();
-                                        _rebuildEntries();
-                                      });
-                                    } else {
-                                      setState(() {
-                                        _messages = _messages.map((x) => x.id == m.id ? m : x).toList();
-                                        _rebuildEntries();
-                                      });
+                        : Stack(
+                            children: [
+                              AnimatedOpacity(
+                                duration: const Duration(milliseconds: 180),
+                                opacity: _listReady ? 1.0 : 0.0,
+                                child: ListView.builder(
+                                  controller: _scroll,
+                                  // Pinned-bottom: offset 0 is the newest message, so the
+                                  // list OPENS at the bottom with zero scroll animation.
+                                  reverse: true,
+                                  scrollCacheExtent: const ScrollCacheExtent.pixels(1200),
+                                  addAutomaticKeepAlives: false,
+                                  addRepaintBoundaries: true,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  itemCount: _entries.length + (_hasMore ? 1 : 0),
+                                  findChildIndexCallback: (key) {
+                                    final v = (key as ValueKey?)?.value;
+                                    if (v is int) {
+                                      final i = _entries.indexWhere((e) =>
+                                          e is ChatMessageEntry && e.message.id == v);
+                                      if (i >= 0) return _entries.length - 1 - i;
                                     }
+                                    return null;
                                   },
-                                  onReply: (m) => setState(() => _replyTo = m),
+                                  itemBuilder: (context, index) {
+                                    // Top slot (oldest side) shows history loader.
+                                    if (_hasMore && index == _entries.length) {
+                                      return const Padding(
+                                        padding: EdgeInsets.symmetric(vertical: 12),
+                                        child: Center(
+                                          child: SizedBox(
+                                            width: 22,
+                                            height: 22,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    // Reverse mapping: builder 0 = newest at bottom.
+                                    final entry = _entries[_entries.length - 1 - index];
+                                    if (entry is ChatDateDividerEntry) {
+                                      return DateDivider(label: entry.label);
+                                    }
+                                    final msg = (entry as ChatMessageEntry).message;
+                                    final uid = context.read<AuthRepository>().userId;
+                                    final callCtrl = context.read<CallSessionController>();
+                                    final canRejoin = msg.isRejoinableCall &&
+                                        !ConversationActions.isAlreadyInCall(
+                                          call: callCtrl,
+                                          conversationId: widget.conversation.id,
+                                          callSessionId: msg.callMeta?.callSessionId,
+                                        );
+                                    return RepaintBoundary(
+                                      child: MessageBubble(
+                                        key: ValueKey(msg.id),
+                                        message: msg,
+                                        showSender: isGroup,
+                                        currentUserId: uid,
+                                        onMediaOpen: _openMediaViewer,
+                                        onCallRejoin: canRejoin ? _rejoinCall : null,
+                                        onPollVote: msg.pollAttachment != null ? (opt) => _votePoll(msg, opt) : null,
+                                        onLongPress: () => showMessageActions(
+                                          context,
+                                          message: msg,
+                                          repo: _repo,
+                                          conversationId: widget.conversation.id,
+                                          onUpdated: (m) {
+                                            if (m == null) {
+                                              setState(() {
+                                                _messages = _messages.where((x) => x.id != msg.id).toList();
+                                                _rebuildEntries();
+                                              });
+                                            } else {
+                                              setState(() {
+                                                _messages = _messages.map((x) => x.id == m.id ? m : x).toList();
+                                                _rebuildEntries();
+                                              });
+                                            }
+                                          },
+                                          onReply: (m) => setState(() => _replyTo = m),
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
-                              );
-                            },
+                              ),
+                              if (_unseenWhileUp > 0)
+                                Positioned(
+                                  bottom: 12,
+                                  left: 0,
+                                  right: 0,
+                                  child: Center(
+                                    child: Material(
+                                      color: MessengerPalette.whatsAppGreen,
+                                      borderRadius: BorderRadius.circular(20),
+                                      elevation: 4,
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(20),
+                                        onTap: () => _scrollToBottom(),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.arrow_downward, size: 16, color: Colors.white),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                _unseenWhileUp == 1 ? '1 new message' : '$_unseenWhileUp new messages',
+                                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
             ),
           ),
@@ -788,5 +976,76 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     return scaffold;
+  }
+}
+
+/// Static shimmer-style placeholders shown while history loads, so opening
+/// a chat feels instant instead of spinner → visible fast-scroll.
+class _ChatSkeleton extends StatelessWidget {
+  const _ChatSkeleton({required this.bgColor});
+  final Color bgColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final ext = messengerExt(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final shimmer = isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.06);
+    Widget bubble({required bool sent, required double width, double height = 44}) {
+      return Padding(
+        padding: EdgeInsets.only(left: sent ? 60 : 12, right: sent ? 12 : 60, top: 5, bottom: 5),
+        child: Row(
+          mainAxisAlignment: sent ? MainAxisAlignment.end : MainAxisAlignment.start,
+          children: [
+            Container(
+              width: width,
+              height: height,
+              decoration: BoxDecoration(
+                color: (sent ? ext.sentBubble : ext.receivedBubble).withValues(alpha: 0.7),
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(12),
+                  topRight: const Radius.circular(12),
+                  bottomLeft: Radius.circular(sent ? 12 : 2),
+                  bottomRight: Radius.circular(sent ? 2 : 12),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: width * 0.85,
+                      height: 10,
+                      decoration: BoxDecoration(color: shimmer, borderRadius: BorderRadius.circular(5)),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: width * 0.55,
+                      height: 10,
+                      decoration: BoxDecoration(color: shimmer, borderRadius: BorderRadius.circular(5)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      reverse: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        bubble(sent: true, width: 210),
+        bubble(sent: false, width: 240, height: 58),
+        bubble(sent: false, width: 160),
+        bubble(sent: true, width: 190, height: 58),
+        bubble(sent: false, width: 220),
+        bubble(sent: true, width: 150),
+      ],
+    );
   }
 }

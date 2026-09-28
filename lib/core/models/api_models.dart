@@ -77,7 +77,7 @@ class AccessibleUser {
       id: json['id'] as int,
       name: json['name'] as String? ?? '',
       email: json['email'] as String?,
-      avatarUrl: json['avatar_url'] as String?,
+      avatarUrl: json['avatar_url'] as String? ?? json['avatar'] as String?,
     );
   }
 
@@ -182,7 +182,7 @@ class ConversationParticipant {
       id: json['id'] as int,
       name: json['name'] as String? ?? '',
       email: json['email'] as String?,
-      avatarUrl: json['avatar'] as String?,
+      avatarUrl: json['avatar_url'] as String? ?? json['avatar'] as String?,
     );
   }
 

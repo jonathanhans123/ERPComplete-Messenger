@@ -47,6 +47,7 @@ class _MemberPickerSheet extends StatefulWidget {
 class _MemberPickerSheetState extends State<_MemberPickerSheet> {
   late MessagingRepository _repo;
   final _search = TextEditingController();
+  List<AccessibleUser> _allUsers = [];
   List<AccessibleUser> _users = [];
   late Set<int> _selected;
   bool _loading = true;
@@ -58,22 +59,37 @@ class _MemberPickerSheetState extends State<_MemberPickerSheet> {
     final auth = context.read<AuthRepository>();
     _repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     _load();
-    _search.addListener(() => _load(_search.text.trim()));
+    // The server ignores the search query — filter locally for instant results.
+    _search.addListener(_applyFilter);
+  }
+
+  void _applyFilter() {
+    if (!mounted) return;
+    final q = _search.text.trim().toLowerCase();
+    setState(() {
+      _users = q.isEmpty
+          ? _allUsers.where((u) => !widget.excludeIds.contains(u.id)).toList()
+          : _allUsers
+              .where((u) =>
+                  !widget.excludeIds.contains(u.id) &&
+                  (u.name.toLowerCase().contains(q) || (u.email?.toLowerCase().contains(q) ?? false)))
+              .toList();
+    });
   }
 
   @override
   void dispose() {
+    _search.removeListener(_applyFilter);
     _search.dispose();
     super.dispose();
   }
 
-  Future<void> _load([String? q]) async {
+  Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final users = await _repo.fetchAccessibleUsers(search: q?.isEmpty == true ? null : q);
-      if (mounted) {
-        setState(() => _users = users.where((u) => !widget.excludeIds.contains(u.id)).toList());
-      }
+      final users = await _repo.fetchAccessibleUsers();
+      if (mounted) setState(() => _allUsers = users);
+      _applyFilter();
     } finally {
       if (mounted) setState(() => _loading = false);
     }

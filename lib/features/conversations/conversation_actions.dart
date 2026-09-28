@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/auth/auth_repository.dart';
+import '../../core/cache/messenger_local_cache.dart';
 import '../../core/calls/call_session_controller.dart';
 import '../../core/messaging/messaging_repository.dart';
 import '../../core/models/api_models.dart';
@@ -62,6 +63,61 @@ class ConversationActions {
       if (context.mounted) _snack(context, 'Chat cleared');
     } catch (e) {
       if (context.mounted) _snack(context, formatApiError(e));
+    }
+  }
+
+  /// Deletes the conversation. Returns true when deleted so
+  /// callers inside an open chat can pop back to the list.
+  ///
+  /// NOTE: the server currently exposes no delete-conversation endpoint, so
+  /// this tries a native DELETE first (in case the backend adds one) and
+  /// otherwise falls back to: clear all messages + archive (removes it from
+  /// the chat list) + purge local cache.
+  static Future<bool> delete(BuildContext context, ConversationSummary c, {VoidCallback? onChanged}) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Delete chat?'),
+        content: Text(
+          c.isGroup
+              ? '“${c.title}” will be cleared and removed from your chat list. This cannot be undone.'
+              : 'Your chat with “${c.title}” will be cleared and removed from your chat list. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: MessengerPalette.danger),
+            onPressed: () => Navigator.pop(d, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return false;
+    try {
+      final repo = repoOf(context);
+      // The server deletes the chat for this user only. The old clear + archive fallback wiped the
+      // history for everyone and made the chat vanish from the list.
+      await repo.deleteConversation(c.id);
+      await MessengerLocalCache.instance.deleteMessages(c.id);
+      onChanged?.call();
+      if (context.mounted) _snack(context, 'Chat deleted');
+      return true;
+    } catch (e) {
+      if (context.mounted) _snack(context, formatApiError(e));
+      return false;
+    }
+  }
+
+  /// Headless delete used by multi-select (no per-chat dialog).
+  /// Returns true on success.
+  static Future<bool> deleteQuiet(MessagingRepository repo, ConversationSummary c) async {
+    try {
+      await repo.deleteConversation(c.id);
+      await MessengerLocalCache.instance.deleteMessages(c.id);
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -173,12 +229,13 @@ class ConversationActions {
     required bool muted,
   }) async {
     final items = [
-      ('info', Icons.info_outline, 'Contact / group info'),
-      (conversation.isPinned ? 'pin' : 'pin', conversation.isPinned ? Icons.push_pin_outlined : Icons.push_pin, conversation.isPinned ? 'Unpin' : 'Pin'),
-      (muted ? 'mute' : 'mute', muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined, muted ? 'Unmute' : 'Mute'),
-      (conversation.isArchived ? 'archive' : 'archive', conversation.isArchived ? Icons.unarchive_outlined : Icons.archive_outlined, conversation.isArchived ? 'Unarchive' : 'Archive'),
-      ('clear', Icons.delete_sweep_outlined, 'Clear chat'),
-      ('export', Icons.download_outlined, 'Export chat'),
+      ('info', Icons.info_outline, 'Contact / group info', false),
+      (conversation.isPinned ? 'pin' : 'pin', conversation.isPinned ? Icons.push_pin_outlined : Icons.push_pin, conversation.isPinned ? 'Unpin' : 'Pin', false),
+      (muted ? 'mute' : 'mute', muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined, muted ? 'Unmute' : 'Mute', false),
+      (conversation.isArchived ? 'archive' : 'archive', conversation.isArchived ? Icons.unarchive_outlined : Icons.archive_outlined, conversation.isArchived ? 'Unarchive' : 'Archive', false),
+      ('clear', Icons.delete_sweep_outlined, 'Clear chat', false),
+      ('export', Icons.download_outlined, 'Export chat', false),
+      ('delete', Icons.delete_outline, 'Delete chat', true),
     ];
     await showModalBottomSheet(
       context: context,
@@ -188,8 +245,8 @@ class ConversationActions {
           children: items
               .map(
                 (e) => ListTile(
-                  leading: Icon(e.$2),
-                  title: Text(e.$3),
+                  leading: Icon(e.$2, color: e.$4 ? MessengerPalette.danger : null),
+                  title: Text(e.$3, style: TextStyle(color: e.$4 ? MessengerPalette.danger : null)),
                   onTap: () async {
                     Navigator.pop(ctx);
                     await handleMenuSelection(context, value: e.$1, conversation: conversation, onChanged: onChanged, muted: muted);
@@ -210,6 +267,10 @@ class ConversationActions {
       PopupMenuItem(value: 'archive', child: _MenuRow(icon: c.isArchived ? Icons.unarchive_outlined : Icons.archive_outlined, label: c.isArchived ? 'Unarchive' : 'Archive')),
       const PopupMenuItem(value: 'clear', child: _MenuRow(icon: Icons.delete_sweep_outlined, label: 'Clear chat')),
       const PopupMenuItem(value: 'export', child: _MenuRow(icon: Icons.download_outlined, label: 'Export chat')),
+      const PopupMenuItem(
+        value: 'delete',
+        child: _MenuRow(icon: Icons.delete_outline, label: 'Delete chat', destructive: true),
+      ),
     ];
   }
 
@@ -235,6 +296,7 @@ class ConversationActions {
     required ConversationSummary conversation,
     required VoidCallback onChanged,
     required bool muted,
+    VoidCallback? onDeleted,
   }) async {
     switch (value) {
       case 'info':
@@ -248,6 +310,9 @@ class ConversationActions {
         await archive(context, conversation, onChanged: onChanged);
       case 'clear':
         await clear(context, conversation, onChanged: onChanged);
+      case 'delete':
+        final deleted = await delete(context, conversation, onChanged: onChanged);
+        if (deleted) onDeleted?.call();
       case 'export':
         await exportChat(context, conversation);
       case 'wallpaper':
@@ -263,17 +328,19 @@ class ConversationActions {
 }
 
 class _MenuRow extends StatelessWidget {
-  const _MenuRow({required this.icon, required this.label});
+  const _MenuRow({required this.icon, required this.label, this.destructive = false});
   final IconData icon;
   final String label;
+  final bool destructive;
 
   @override
   Widget build(BuildContext context) {
+    final color = destructive ? MessengerPalette.danger : messengerExt(context).subtext;
     return Row(
       children: [
-        Icon(icon, size: 20, color: messengerExt(context).subtext),
+        Icon(icon, size: 20, color: color),
         const SizedBox(width: 12),
-        Text(label),
+        Text(label, style: TextStyle(color: destructive ? MessengerPalette.danger : null)),
       ],
     );
   }
@@ -305,13 +372,48 @@ Future<ConversationSummary?> showNewChatFlow(BuildContext context) async {
   return Navigator.push<ConversationSummary>(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen()));
 }
 
-Future<ConversationSummary?> showNewDirectChatSheet(BuildContext context) {
-  return showModalBottomSheet<ConversationSummary>(
+Future<ConversationSummary?> showNewDirectChatSheet(BuildContext context) async {
+  // Phase 1: pick a person. The sheet closes IMMEDIATELY on tap so double
+  // taps can't fire multiple creates (which caused duplicates + black screen
+  // from double-popping the sheet route).
+  final picked = await showModalBottomSheet<AccessibleUser>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     builder: (_) => const _DirectChatPicker(),
   );
+  if (!context.mounted || picked == null) return null;
+
+  // Phase 2: create outside the sheet with a blocking progress dialog so
+  // only one create can ever be in flight.
+  final repo = ConversationActions.repoOf(context);
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const Center(child: CircularProgressIndicator()),
+  );
+  try {
+    final conv = await repo.createConversation(type: 'direct', participantIds: [picked.id]);
+    // The create endpoint returns the raw model (name is null for directs),
+    // which shows up as "Conversation" + "?". Resolve the display title via
+    // the formatted detail, and revive the chat if a previous delete/archive
+    // had hidden it — otherwise re-adding keeps returning an invisible chat.
+    ConversationSummary summary = conv;
+    try {
+      await repo.toggleArchiveConversation(conv.id, false);
+    } catch (_) {}
+    try {
+      summary = (await repo.fetchConversation(conv.id)).toSummary();
+    } catch (_) {}
+    if (context.mounted) Navigator.pop(context); // dismiss progress
+    return summary;
+  } catch (e) {
+    if (context.mounted) {
+      Navigator.pop(context); // dismiss progress
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
+    }
+    return null;
+  }
 }
 
 class _DirectChatPicker extends StatefulWidget {
@@ -323,8 +425,11 @@ class _DirectChatPicker extends StatefulWidget {
 class _DirectChatPickerState extends State<_DirectChatPicker> {
   late MessagingRepository _repo;
   final _search = TextEditingController();
+  List<AccessibleUser> _allUsers = [];
   List<AccessibleUser> _users = [];
   bool _loading = true;
+  String? _error;
+  bool _picked = false;
 
   @override
   void initState() {
@@ -332,23 +437,52 @@ class _DirectChatPickerState extends State<_DirectChatPicker> {
     final auth = context.read<AuthRepository>();
     _repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     _load();
-    _search.addListener(() => _load(_search.text.trim()));
+    // The server ignores the search query, so filter the fetched list
+    // locally — instant results and zero extra API calls per keystroke.
+    _search.addListener(_applyFilter);
   }
 
   @override
   void dispose() {
+    _search.removeListener(_applyFilter);
     _search.dispose();
     super.dispose();
   }
 
-  Future<void> _load([String? q]) async {
-    setState(() => _loading = true);
+  Future<void> _load() async {
+    if (mounted) setState(() => _loading = true);
     try {
-      final users = await _repo.fetchAccessibleUsers(search: q?.isEmpty == true ? null : q);
-      if (mounted) setState(() => _users = users);
+      final users = await _repo.fetchAccessibleUsers();
+      if (!mounted) return;
+      setState(() {
+        _allUsers = users;
+        _error = null;
+      });
+      _applyFilter();
+    } catch (e) {
+      if (mounted) setState(() => _error = formatApiError(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _applyFilter() {
+    if (!mounted) return;
+    final q = _search.text.trim().toLowerCase();
+    setState(() {
+      _users = q.isEmpty
+          ? _allUsers
+          : _allUsers
+              .where((u) => u.name.toLowerCase().contains(q) || (u.email?.toLowerCase().contains(q) ?? false))
+              .toList();
+    });
+  }
+
+  void _pick(AccessibleUser user) {
+    if (_picked) return;
+    _picked = true;
+    // Close immediately — creation happens after the sheet is gone.
+    Navigator.pop(context, user);
   }
 
   @override
@@ -358,35 +492,69 @@ class _DirectChatPickerState extends State<_DirectChatPicker> {
       initialChildSize: 0.85,
       builder: (_, sc) => Column(
         children: [
-          AppBar(title: const Text('New chat'), automaticallyImplyLeading: false, actions: [IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close))]),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+            child: Row(
+              children: [
+                const SizedBox(width: 48),
+                const Expanded(
+                  child: Text(
+                    'New chat',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+              ],
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(controller: _search, decoration: const InputDecoration(hintText: 'Search people', prefixIcon: Icon(Icons.search))),
           ),
           Expanded(
-            child: _loading
+            child: _loading && _allUsers.isEmpty
                 ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    controller: sc,
-                    itemCount: _users.length,
-                    itemBuilder: (_, i) {
-                      final u = _users[i];
-                      return ListTile(
-                        leading: MessengerAvatar(label: u.initials, radius: 22),
-                        title: Text(u.name),
-                        subtitle: u.email != null ? Text(u.email!) : null,
-                        onTap: () async {
-                          try {
-                            final c = await _repo.createConversation(type: 'direct', participantIds: [u.id]);
-                            // `context` here is the sheet builder's, not this State's — check it directly.
-                            if (context.mounted) Navigator.pop(context, c);
-                          } catch (e) {
-                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatApiError(e))));
-                          }
+                : _error != null && _allUsers.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(_error!, textAlign: TextAlign.center),
+                              const SizedBox(height: 12),
+                              FilledButton(onPressed: _load, child: const Text('Retry')),
+                            ],
+                          ),
+                        ),
+                      )
+                    : _allUsers.isEmpty
+                        ? const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(24),
+                              child: Text(
+                                'No people available.\nOnly users sharing your business units show up here.',
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          )
+                        : _users.isEmpty
+                            ? const Center(child: Text('No match for that search'))
+                            : ListView.builder(
+                        controller: sc,
+                        itemCount: _users.length,
+                        itemBuilder: (_, i) {
+                          final u = _users[i];
+                          return ListTile(
+                            leading: MessengerAvatar(label: u.initials, radius: 22),
+                            title: Text(u.name),
+                            subtitle: u.email != null ? Text(u.email!) : null,
+                            enabled: !_picked,
+                            onTap: () => _pick(u),
+                          );
                         },
-                      );
-                    },
-                  ),
+                      ),
           ),
         ],
       ),

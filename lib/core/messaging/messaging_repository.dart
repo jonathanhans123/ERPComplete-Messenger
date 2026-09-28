@@ -207,11 +207,13 @@ class MessagingRepository {
     required int conversationId,
     required String body,
     int? replyToMessageId,
+    String? clientMessageId,
   }) async {
     final fields = {
       'conversation_id': '$conversationId',
       'type': 'text',
       'body': body,
+      if (clientMessageId != null) 'client_message_id': clientMessageId,
       if (replyToMessageId != null) 'reply_to_message_id': '$replyToMessageId',
     };
     final json = await _client().postForm('messaging/messages', fields);
@@ -265,6 +267,11 @@ class MessagingRepository {
 
   Future<void> clearChat(int conversationId) async {
     await _client().postJson('messaging/conversations/$conversationId/clear');
+  }
+
+  /// Deletes the chat for this user only (history cleared, chat hidden until a newer message arrives).
+  Future<void> deleteConversation(int conversationId) async {
+    await _client().deleteJson('messaging/conversations/$conversationId');
   }
 
   Future<ChatMessage> updateMessage(int messageId, String body, {ChatMessage? fallback}) async {

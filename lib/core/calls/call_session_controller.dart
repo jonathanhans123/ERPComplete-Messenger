@@ -284,6 +284,21 @@ class CallSessionController extends ChangeNotifier {
       return;
     }
 
+    // Joining a still-ringing incoming call IS answering it: record that so a
+    // fast leave afterwards is stored as completed, not "Missed".
+    // (Server guard makes this idempotent with banner-accept.)
+    if (!callMessage.isSent && meta.phase.toLowerCase() == 'ringing') {
+      unawaited(messagingRepo
+          .sendCallSignal(
+            conversationId: conv.id,
+            action: 'answered',
+            callSessionId: meta.callSessionId,
+            roomName: meta.roomName,
+            messageId: callMessage.id,
+          )
+          .catchError((_) {}));
+    }
+
     if (active &&
         sessionId == meta.callSessionId &&
         room == meta.roomName &&
@@ -383,6 +398,19 @@ class CallSessionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+
+    // Tell the server + other side immediately that we picked up, so the
+    // call row flips ringing → live even if media takes a while (or fails).
+    // Without this, accept-then-hang-up-fast is recorded as "Missed call".
+    unawaited(messagingRepo
+        .sendCallSignal(
+          conversationId: conv.id,
+          action: 'answered',
+          callSessionId: meta.callSessionId,
+          roomName: meta.roomName,
+          messageId: callMessage.id,
+        )
+        .catchError((_) {}));
 
     if (active || connecting) {
       await forceReset();
@@ -583,7 +611,22 @@ class CallSessionController extends ChangeNotifier {
 
       await _detachRoomImmediate();
       lkRoom = Room();
-      await lkRoom.connect(t.url, t.token);
+      // Generous timeouts: mobile networks (especially via TURN/TLS) often
+      // need longer than the SDK's 10s defaults to establish a peer connection.
+      await lkRoom.connect(
+        t.url,
+        t.token,
+        connectOptions: const ConnectOptions(
+          timeouts: Timeouts(
+            connection: Duration(seconds: 20),
+            debounce: Duration(milliseconds: 20),
+            publish: Duration(seconds: 20),
+            subscribe: Duration(seconds: 20),
+            peerConnection: Duration(seconds: 25),
+            iceRestart: Duration(seconds: 20),
+          ),
+        ),
+      );
       if (!_connectStillValid(epoch)) {
         _scheduleRoomTeardown(lkRoom);
         return;

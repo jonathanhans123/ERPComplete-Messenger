@@ -10,6 +10,7 @@ class ConversationTile extends StatelessWidget {
     required this.conversation,
     required this.onTap,
     this.selected = false,
+    this.multiSelected = false,
     this.onInfo,
     this.onLongPressMenu,
   });
@@ -17,6 +18,7 @@ class ConversationTile extends StatelessWidget {
   final ConversationSummary conversation;
   final VoidCallback onTap;
   final bool selected;
+  final bool multiSelected;
   final VoidCallback? onInfo;
   final VoidCallback? onLongPressMenu;
 
@@ -28,7 +30,11 @@ class ConversationTile extends StatelessWidget {
     final hasUnread = c.unreadCount > 0;
 
     return Material(
-      color: selected ? theme.colorScheme.primary.withValues(alpha: 0.08) : theme.colorScheme.surface,
+      color: multiSelected
+          ? MessengerPalette.whatsAppGreen.withValues(alpha: 0.12)
+          : selected
+              ? theme.colorScheme.primary.withValues(alpha: 0.08)
+              : theme.colorScheme.surface,
       child: InkWell(
         onTap: onTap,
         onLongPress: onLongPressMenu,
@@ -39,12 +45,18 @@ class ConversationTile extends StatelessWidget {
             children: [
               GestureDetector(
                 onTap: onInfo ?? onTap,
-                child: MessengerAvatar(
-                  label: c.avatarInitials ?? '?',
-                  radius: 22,
-                  isGroup: c.isGroup,
-                  online: c.online,
-                ),
+                child: multiSelected
+                    ? const CircleAvatar(
+                        radius: 22,
+                        backgroundColor: MessengerPalette.whatsAppGreen,
+                        child: Icon(Icons.check, color: Colors.white, size: 22),
+                      )
+                    : MessengerAvatar(
+                        label: c.avatarInitials ?? '?',
+                        radius: 22,
+                        isGroup: c.isGroup,
+                        online: c.online,
+                      ),
               ),
               const SizedBox(width: 10),
               Expanded(

@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../config/api_config.dart';
 import '../api/api_client.dart';
+import '../cache/messenger_local_cache.dart';
 import '../models/api_models.dart';
 
 class AuthRepository extends ChangeNotifier {
@@ -12,7 +13,14 @@ class AuthRepository extends ChangeNotifier {
       : _storage = storage ??
             const FlutterSecureStorage(
               aOptions: AndroidOptions(encryptedSharedPreferences: true),
-            );
+            ) {
+    // Any 401 from any API call signs out globally. Without this a dead
+    // token (e.g. after a database reset) left the user stuck on stale
+    // cached chats with only a "session expired" snackbar.
+    ApiClient.onUnauthorized = () {
+      unawaited(handleUnauthorized());
+    };
+  }
 
   static const _tokenKey = 'access_token';
   static const _userIdKey = 'user_id';
@@ -20,7 +28,6 @@ class AuthRepository extends ChangeNotifier {
   static const _userEmailKey = 'user_email';
   static const _buKey = 'business_unit_id';
   static const _teamKey = 'team_id';
-  static const _bootstrapRefreshTimeout = Duration(seconds: 10);
   static const _storageReadTimeout = Duration(seconds: 15);
 
   final FlutterSecureStorage _storage;
@@ -33,6 +40,7 @@ class AuthRepository extends ChangeNotifier {
   int? _teamId;
   bool _bootstrapped = false;
   bool _refreshing = false;
+  bool _recovering401 = false;
 
   String get apiBaseUrl => ApiConfig.defaultBaseUrl;
   String? get token => _token;
@@ -47,12 +55,10 @@ class AuthRepository extends ChangeNotifier {
   Future<void> bootstrap() async {
     try {
       await _loadStoredCredentials();
-      if (isAuthenticated) {
-        await refreshSession(logoutOnFailure: false).timeout(
-          _bootstrapRefreshTimeout,
-          onTimeout: () => false,
-        );
-      }
+      // NOTE: no proactive refresh here. The server revokes the token on
+      // every refresh, so rotating on every launch/resume widens the race
+      // where in-flight requests still carry the old token, 401, and used to
+      // sign the user out. A dead token is caught on first use instead.
     } catch (e, st) {
       debugPrint('[AuthRepository] bootstrap failed: $e\n$st');
     } finally {
@@ -118,6 +124,9 @@ class AuthRepository extends ChangeNotifier {
     if (response.accessToken == null || response.accessToken!.isEmpty) {
       throw ApiException('No access token in login response');
     }
+    // Drop any previous account's (or pre-reset database's) cached chats
+    // before the new session populates the list.
+    await MessengerLocalCache.instance.clearAll();
     await _applyToken(response.accessToken!, user: response.user, email: email);
   }
 
@@ -177,6 +186,30 @@ class AuthRepository extends ChangeNotifier {
     for (final k in [_tokenKey, _userIdKey, _userNameKey, _userEmailKey, _buKey, _teamKey]) {
       await _storage.delete(key: k);
     }
+    await MessengerLocalCache.instance.clearAll();
     notifyListeners();
+  }
+
+  /// Global 401 handler (wired to [ApiClient.onUnauthorized]).
+  ///
+  /// A 401 is often just a stale-token race: the server revokes the token on
+  /// every refresh, so a request that started before a rotation 401s even
+  /// though the session is alive. Recover with a single refresh first and
+  /// only sign out when refresh fails too. Network errors never reach here —
+  /// only real 401s do, since _decodeMap is the sole caller.
+  Future<void> handleUnauthorized() async {
+    if (!isAuthenticated || _recovering401) return;
+    _recovering401 = true;
+    try {
+      final ok = await refreshSession(logoutOnFailure: false);
+      if (!ok || !isAuthenticated) {
+        debugPrint('[AuthRepository] session expired — signing out');
+        await logout();
+      } else {
+        debugPrint('[AuthRepository] recovered session after 401');
+      }
+    } finally {
+      _recovering401 = false;
+    }
   }
 }

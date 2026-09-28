@@ -42,6 +42,12 @@ class MessagingBroadcastService extends ChangeNotifier {
   final Map<int, String> _conversationTitles = {};
   final Set<int> _desiredConversationIds = {};
 
+  /// The user's own channel: the server mirrors every new message and call signal there, so chats and
+  /// calls from conversations that are not subscribed yet (a brand-new chat) still arrive.
+  PrivateChannel? _userChannel;
+  final List<StreamSubscription<ChannelReadEvent>> _userBindings = [];
+  int? _userId;
+
   bool _connecting = false;
   bool _connected = false;
   String? _lastError;
@@ -64,10 +70,17 @@ class MessagingBroadcastService extends ChangeNotifier {
     _token = newToken;
     _businessUnitId = auth.businessUnitId;
     _teamId = auth.teamId;
+    _userId = auth.userId;
 
     if (!tokenChanged && (_connected || _connecting)) return;
-    if (tokenChanged && _client != null) {
-      await disconnect(notify: false);
+    if (tokenChanged) {
+      // New session (re-login after expiry/reset) — forget the previous
+      // session's channels so we never resubscribe to stale conversation IDs.
+      _desiredConversationIds.clear();
+      _conversationTitles.clear();
+      if (_client != null) {
+        await disconnect(notify: false);
+      }
     }
 
     if (_connecting) return;
@@ -141,6 +154,11 @@ class MessagingBroadcastService extends ChangeNotifier {
     }
     _bindings.clear();
     _channels.clear();
+    for (final sub in _userBindings) {
+      await sub.cancel();
+    }
+    _userBindings.clear();
+    _userChannel = null;
 
     final client = _client;
     _client = null;
@@ -191,6 +209,7 @@ class MessagingBroadcastService extends ChangeNotifier {
       if (_channels.containsKey(id)) continue;
       _setupChannel(id);
     }
+    _setupUserChannel();
 
     if (_connected) {
       _resubscribeAll();
@@ -198,6 +217,7 @@ class MessagingBroadcastService extends ChangeNotifier {
   }
 
   void _resubscribeAll() {
+    _userChannel?.subscribeIfNotUnsubscribed();
     for (final entry in _channels.entries) {
       final channel = entry.value;
       channel.subscribeIfNotUnsubscribed();
@@ -235,6 +255,34 @@ class MessagingBroadcastService extends ChangeNotifier {
       }));
     }
     _bindings[conversationId] = subs;
+
+    if (_connected) {
+      channel.subscribeIfNotUnsubscribed();
+    }
+  }
+
+  void _setupUserChannel() {
+    final client = _client;
+    final userId = _userId;
+    if (client == null || userId == null || userId == 0 || _userChannel != null) return;
+
+    final channel = client.privateChannel(
+      'private-App.Models.User.$userId',
+      authorizationDelegate: _authDelegate(),
+    );
+    _userChannel = channel;
+    _userBindings.add(channel.bind('messaging.activity').listen((event) {
+      final payload = _parseEventData(event.data);
+      final conversationId = (payload['conversation_id'] as num?)?.toInt() ?? 0;
+      final data = payload['data'];
+      // Subscribed conversations already get the event on their own channel.
+      if (conversationId == 0 || data is! Map || _channels.containsKey(conversationId)) return;
+      _events.add(MessagingBroadcastEvent(
+        conversationId: conversationId,
+        eventName: payload['kind'] == 'call' ? 'messaging.call' : 'message.sent',
+        data: Map<String, dynamic>.from(data),
+      ));
+    }));
 
     if (_connected) {
       channel.subscribeIfNotUnsubscribed();

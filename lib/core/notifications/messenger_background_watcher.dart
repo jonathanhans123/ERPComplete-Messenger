@@ -38,7 +38,9 @@ class MessengerBackgroundWatcher {
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     try {
       final conversations = await repo.fetchConversations();
-      for (final c in conversations) {
+      // Bound fan-out: one poll tick must not turn into N message fetches.
+      final candidates = conversations.where((c) => c.unreadCount > 0).take(5);
+      for (final c in candidates) {
         if (!prefs.shouldNotifyForConversation(c.id)) continue;
         if (c.unreadCount <= 0) continue;
         final messages = await repo.fetchMessages(c.id);

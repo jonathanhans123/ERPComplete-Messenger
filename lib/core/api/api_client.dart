@@ -12,6 +12,8 @@ class ApiException implements Exception {
   final int? statusCode;
   final bool twoFactorRequired;
 
+  bool get isUnauthorized => statusCode == 401;
+
   @override
   String toString() => message;
 }
@@ -33,6 +35,11 @@ class ApiClient {
   static const Duration _connectionTimeout = Duration(seconds: 12);
   static const Duration _idleTimeout = Duration(seconds: 15);
   static const Duration _responseTimeout = Duration(seconds: 20);
+
+  /// Fired (fire-and-forget) whenever any non-login request gets a 401.
+  /// AuthRepository wires this to sign out + wipe stale cache so a dead
+  /// session can never leave the user staring at old chats.
+  static void Function()? onUnauthorized;
 
   static final HttpClient _client = (() {
     final client = HttpClient()
@@ -62,30 +69,38 @@ class ApiClient {
     }
   }
 
+  void _throwIfBlocked(bool bypassThrottle) {
+    if (!bypassThrottle && ApiThrottleGuard.instance.isBlocked) {
+      throw ApiException(ApiThrottleGuard.instance.userMessage, statusCode: 429);
+    }
+  }
+
   Future<Map<String, dynamic>> getJson(
     String path, {
     Map<String, String>? query,
     bool bypassThrottle = false,
   }) {
-    if (!bypassThrottle && ApiThrottleGuard.instance.isBlocked) {
-      throw ApiException(ApiThrottleGuard.instance.userMessage, statusCode: 429);
-    }
+    _throwIfBlocked(bypassThrottle);
     return _send(method: 'GET', path: path, query: query);
   }
 
-  Future<Map<String, dynamic>> postJson(String path, {Map<String, dynamic>? body}) {
+  Future<Map<String, dynamic>> postJson(String path, {Map<String, dynamic>? body, bool bypassThrottle = false}) {
+    _throwIfBlocked(bypassThrottle);
     return _send(method: 'POST', path: path, jsonBody: body ?? {});
   }
 
-  Future<Map<String, dynamic>> putJson(String path, {Map<String, dynamic>? body}) {
+  Future<Map<String, dynamic>> putJson(String path, {Map<String, dynamic>? body, bool bypassThrottle = false}) {
+    _throwIfBlocked(bypassThrottle);
     return _send(method: 'PUT', path: path, jsonBody: body ?? {});
   }
 
-  Future<Map<String, dynamic>> deleteJson(String path) {
+  Future<Map<String, dynamic>> deleteJson(String path, {bool bypassThrottle = false}) {
+    _throwIfBlocked(bypassThrottle);
     return _send(method: 'DELETE', path: path);
   }
 
-  Future<Map<String, dynamic>> postForm(String path, Map<String, String> fields) {
+  Future<Map<String, dynamic>> postForm(String path, Map<String, String> fields, {bool bypassThrottle = false}) {
+    _throwIfBlocked(bypassThrottle);
     return _send(method: 'POST', path: path, formBody: fields);
   }
 
@@ -93,7 +108,9 @@ class ApiClient {
     String path, {
     required Map<String, String> fields,
     List<({String field, File file, String filename})>? files,
+    bool bypassThrottle = false,
   }) async {
+    _throwIfBlocked(bypassThrottle);
     final boundary = '----erpboundary${DateTime.now().millisecondsSinceEpoch}';
     final uri = _uri(path);
     final request = await _client.postUrl(uri);
@@ -123,6 +140,7 @@ class ApiClient {
       final text = await response.transform(utf8.decoder).join().timeout(_responseTimeout);
       return _decodeMap(response.statusCode, text, path: path);
     } catch (e) {
+      if (e is ApiException) rethrow;
       throw ApiException(_friendlyError(e));
     }
   }
@@ -189,6 +207,7 @@ class ApiClient {
     }
 
     if (statusCode == 401) {
+      if (!isLogin) onUnauthorized?.call();
       throw ApiException(
         isLogin
             ? (serverMessage() ?? 'The email or password you entered is incorrect. Please try again.')

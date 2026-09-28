@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 
+import '../api/api_throttle_guard.dart';
 import '../auth/auth_repository.dart';
 import '../messaging/messaging_broadcast_service.dart';
 import '../messaging/messaging_repository.dart';
@@ -33,7 +34,9 @@ class IncomingCallWatcher {
     _broadcastSub = broadcast.events.listen(_onBroadcastEvent);
 
     _fallbackTimer?.cancel();
-    _fallbackTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fallbackPoll());
+    // Poll only when the WebSocket is down. 15s (not 4s) + throttle-guard
+    // respect keeps light usage from tripping server rate limits.
+    _fallbackTimer = Timer.periodic(const Duration(seconds: 15), (_) => _fallbackPoll());
     Future.microtask(_fallbackPoll);
   }
 
@@ -69,6 +72,7 @@ class IncomingCallWatcher {
   Future<void> _fallbackPoll() async {
     final context = _context;
     if (context == null || !context.mounted || _busy) return;
+    if (ApiThrottleGuard.instance.isBlocked) return;
 
     final broadcast = context.read<MessagingBroadcastService>();
     if (broadcast.isConnected) return;
@@ -92,18 +96,19 @@ class IncomingCallWatcher {
 
     final incoming = context.read<IncomingCallController>();
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
-    final conversations = await repo.fetchConversations(bypassThrottle: true);
+    final conversations = await repo.fetchConversations();
     if (!context.mounted) return;
 
     context.read<MessagingBroadcastService>().syncConversations(conversations);
 
     final callConversations = conversations
         .where((c) => !c.isArchived && c.lastMessageType == 'call')
+        .take(3)
         .toList();
 
     IncomingCallInvite? ringing;
     for (final conv in callConversations) {
-      final messages = await repo.fetchMessages(conv.id, bypassThrottle: true);
+      final messages = await repo.fetchMessages(conv.id);
       for (final m in messages.take(8)) {
         if (!_isRingingIncoming(m)) continue;
         if (!incoming.shouldNotifyForMessage(m.id)) continue;
@@ -150,6 +155,20 @@ class IncomingCallWatcher {
     }
 
     if (action == 'answered' || action == 'active') {
+      // Answered on another device of the same user (e.g. the web): stop ringing here.
+      final messageId = event.data['message_id'] as int?;
+      final answeredHere = callSession.isActive && callSession.sessionId == sessionId;
+      if (action == 'answered' &&
+          fromUserId != null &&
+          fromUserId == auth.userId &&
+          !answeredHere &&
+          messageId != null &&
+          incoming.pending?.message.id == messageId) {
+        _lastNotifiedMessageId = null;
+        await IncomingCallRingtone.stop();
+        await MessengerNotificationService.instance.clearIncomingCallNotification();
+        incoming.clear(messageId: messageId, handled: true);
+      }
       return;
     }
 
@@ -265,7 +284,7 @@ class IncomingCallWatcher {
     }
 
     try {
-      final messages = await repo.fetchMessages(pending.conversation.id, bypassThrottle: true);
+      final messages = await repo.fetchMessages(pending.conversation.id);
       for (final m in messages) {
         if (m.id == pending.message.id && _isRingingIncoming(m)) {
           return;

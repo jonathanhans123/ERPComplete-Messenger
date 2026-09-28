@@ -15,9 +15,12 @@ class ApiThrottleGuard {
     return diff.isNegative ? Duration.zero : diff;
   }
 
-  void register429() {
+  void register429({int? retryAfterSeconds}) {
     _strikeCount = (_strikeCount + 1).clamp(1, 6);
-    final seconds = (30 * _strikeCount).clamp(30, 300);
+    final base = (15 * _strikeCount).clamp(15, 120);
+    final seconds = retryAfterSeconds != null && retryAfterSeconds > 0
+        ? base < retryAfterSeconds ? base : retryAfterSeconds.clamp(5, 120)
+        : base;
     _blockedUntil = DateTime.now().add(Duration(seconds: seconds));
   }
 

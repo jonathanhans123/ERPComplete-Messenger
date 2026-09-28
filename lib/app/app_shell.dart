@@ -59,7 +59,9 @@ class _MessengerHomeState extends State<MessengerHome> {
     final auth = context.read<AuthRepository>();
     final call = context.read<CallSessionController>();
     await MessengerNotificationService.instance.clearAllCallNotifications();
-    await auth.refreshSession(logoutOnFailure: false);
+    // No proactive refresh: the server revokes on every refresh, so rotating
+    // here races in-flight calls into 401s. A dead token is caught on first
+    // use by the 401-recovery path instead.
     if (!mounted || !auth.isAuthenticated) return;
     final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
     final name = auth.userName ?? 'User';
@@ -229,7 +231,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final auth = context.read<AuthRepository>();
     final broadcast = context.read<MessagingBroadcastService>();
     final call = context.read<CallSessionController>();
-    await auth.refreshSession(logoutOnFailure: false);
+    // No proactive refresh here either (see _recoverCallState): rotating the
+    // token on every resume races in-flight requests into 401s.
     if (!mounted || !auth.isAuthenticated) return;
     await broadcast.connect(auth);
     if (!mounted) return;
