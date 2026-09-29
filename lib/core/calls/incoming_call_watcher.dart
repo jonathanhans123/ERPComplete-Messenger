@@ -82,11 +82,46 @@ class IncomingCallWatcher {
 
     _busy = true;
     try {
-      await _scanForRingingCalls(context);
+      // An active call takes priority: verify IT is still live instead of
+      // scanning for new invites (also caps request volume mid-call).
+      if (context.read<CallSessionController>().isActive) {
+        await _verifyActiveCallStillLive(context);
+      } else {
+        await _scanForRingingCalls(context);
+      }
     } catch (_) {
     } finally {
       _busy = false;
     }
+  }
+
+  /// Socket is down and we're in a call: fetch our call row directly. If the
+  /// other side ended/declined while we couldn't hear the signal, hang up now
+  /// instead of staying stuck in a dead call.
+  Future<void> _verifyActiveCallStillLive(BuildContext context) async {
+    final auth = context.read<AuthRepository>();
+    final callSession = context.read<CallSessionController>();
+    final convId = callSession.conversation?.id;
+    final mid = callSession.messageId;
+    if (convId == null || mid == null) return;
+    final repo = MessagingRepository(() => auth.client(), currentUserId: auth.userId);
+    try {
+      final messages = await repo.fetchMessages(convId);
+      if (!context.mounted) return;
+      for (final m in messages) {
+        if (m.id != mid || m.type != 'call') continue;
+        final phase = (m.callMeta?.phase ?? '').toLowerCase();
+        final outcome = (m.callMeta?.callOutcome ?? '').toLowerCase();
+        if (phase == 'ended' ||
+            phase == 'declined' ||
+            outcome == 'missed' ||
+            outcome == 'rejected' ||
+            outcome == 'cancelled') {
+          await callSession.applyRemoteEnded();
+        }
+        return;
+      }
+    } catch (_) {}
   }
 
   Future<void> _scanForRingingCalls(BuildContext context) async {
@@ -137,14 +172,20 @@ class IncomingCallWatcher {
     final sessionId = event.data['call_session_id'] as String? ?? '';
 
     if (action == 'ended' || action == 'declined' || action == 'cancelled' || action == 'rejected') {
-      if (sessionId.isNotEmpty &&
+      // Match by session, or by message when the session id is missing/stale,
+      // so a remote hangup always tears the call down immediately.
+      final sessionMatches = sessionId.isNotEmpty &&
           callSession.isActive &&
-          callSession.sessionId == sessionId) {
+          callSession.sessionId == sessionId;
+      final messageId = event.data['message_id'] as int?;
+      final messageMatches = messageId != null &&
+          callSession.isActive &&
+          callSession.messageId == messageId;
+      if (sessionMatches || messageMatches) {
         await callSession.applyRemoteEnded(
           durationSeconds: event.data['duration_seconds'] as int?,
         );
       }
-      final messageId = event.data['message_id'] as int?;
       if (messageId != null && incoming.pending?.message.id == messageId) {
         _lastNotifiedMessageId = null;
         await IncomingCallRingtone.stop();

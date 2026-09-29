@@ -31,6 +31,14 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // Code shrinking is on for release builds; proguard-rules.pro keeps
+            // Gson signatures so flutter_local_notifications works in release
+            // builds (it otherwise crashes on show/cancel).
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }

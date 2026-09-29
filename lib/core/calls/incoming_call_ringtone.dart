@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
-/// Vibration pulse while an incoming call is ringing (notification channel handles sound).
+import 'call_sounds.dart';
+
+/// Audible ring + vibration pulse while an incoming call is ringing.
+/// (Notification channels also handle sound when the app is backgrounded.)
 class IncomingCallRingtone {
   IncomingCallRingtone._();
 
@@ -12,6 +15,7 @@ class IncomingCallRingtone {
   static Future<void> start() async {
     if (_playing) return;
     _playing = true;
+    unawaited(CallSounds.startIncoming());
     await HapticFeedback.heavyImpact();
     _timer = Timer.periodic(const Duration(milliseconds: 1400), (_) {
       HapticFeedback.heavyImpact();
@@ -23,5 +27,6 @@ class IncomingCallRingtone {
     _playing = false;
     _timer?.cancel();
     _timer = null;
+    await CallSounds.stopAll();
   }
 }

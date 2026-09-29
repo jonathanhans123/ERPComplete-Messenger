@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../messaging/messaging_repository.dart';
 import '../models/api_models.dart';
 import 'call_session_storage.dart';
+import 'call_sounds.dart';
 
 /// Keeps an active call alive while user navigates chat (minimized bar).
 class CallSessionController extends ChangeNotifier {
@@ -382,6 +383,8 @@ class CallSessionController extends ChangeNotifier {
     _resetCallTracking();
     _startRingTimeout();
     notifyListeners();
+    // Outgoing ringback until the other side joins (or the call ends).
+    unawaited(CallSounds.startRingback());
     await _connect(outgoing: true, epoch: epoch);
   }
 
@@ -517,6 +520,7 @@ class CallSessionController extends ChangeNotifier {
     _connectedAt ??= DateTime.now();
     _rejoinGraceUntil = null;
     _cancelRingTimeout();
+    unawaited(CallSounds.stopAll());
     unawaited(_sendActiveIfNeeded());
     unawaited(_persistActiveCall());
     notifyListeners();
@@ -659,6 +663,7 @@ class CallSessionController extends ChangeNotifier {
       if (!_connectStillValid(epoch)) return;
       error = e.toString();
       connected = false;
+      unawaited(CallSounds.stopAll());
       if (lkRoom != null) {
         _scheduleRoomTeardown(lkRoom);
       } else {
@@ -710,8 +715,8 @@ class CallSessionController extends ChangeNotifier {
 
   void _forceUiTeardown() {
     if (!active && !connecting && _room == null) return;
-    active = false;
-    minimized = false;
+    unawaited(CallSounds.stopAll());
+    active = false;    minimized = false;
     connecting = false;
     connected = false;
     notifyListeners();
@@ -725,6 +730,7 @@ class CallSessionController extends ChangeNotifier {
   }
 
   void _tearDownLocalState({bool cancelTeardown = true}) {
+    unawaited(CallSounds.stopAll());
     if (cancelTeardown) {
       _cancelRoomTeardown();
     }
@@ -908,6 +914,7 @@ class CallSessionController extends ChangeNotifier {
     // Signal remote peers first so web/mobile sync duration before LiveKit teardown.
     await _finishEnd(snapshot);
     _tearDownLocalState();
+    unawaited(CallSounds.playEnded());
     notifyListeners();
   }
 
@@ -920,6 +927,7 @@ class CallSessionController extends ChangeNotifier {
     _autoEnding = true;
     _cancelRingTimeout();
     _tearDownLocalState();
+    unawaited(CallSounds.playEnded());
     await CallSessionStorage.clear();
     _ending = false;
     notifyListeners();
